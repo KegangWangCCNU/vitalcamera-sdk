@@ -13,11 +13,11 @@ Browser-based real-time physiological sensing — extract **heart rate**, **HRV*
 
 | Feature | Output | Update Rate |
 |---------|--------|-------------|
-| Heart Rate (rPPG) | BPM value | ~1/s |
-| HRV | RMSSD (ms) | ~1/s (after 15s warm-up) |
+| Heart Rate | BPM value | 2/s |
+| HRV | RMSSD (ms) | 1/s |
 | Emotion | 8-class probabilities | 2/s |
 | Gaze | Yaw & Pitch (degrees) | 5/s |
-| Head Pose | Yaw, Pitch, Roll | every frame |
+| Head Pose | Yaw, Pitch, Roll | realtime |
 
 ## Quick links
 
