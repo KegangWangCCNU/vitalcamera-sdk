@@ -415,13 +415,20 @@ class VitalCamera {
             this._bvpRing.shift();
         }
 
-        // When the BVP ring is full, dispatch to PSD worker
-        if (this._bvpRing.length === this._bvpRingSize) {
-            this._postIfReady('psd', {
-                type: 'run',
-                payload: { inputData: new Float32Array(this._bvpRing) },
-            });
+        // Send PSD every frame — right-align with zero-fill when not yet full
+        // (matches original FacePhys behavior: inference starts immediately)
+        const ordered = new Float32Array(this._bvpRingSize);
+        const len = this._bvpRing.length;
+        if (len < this._bvpRingSize) {
+            // Zero-fill on the left, data on the right
+            ordered.set(this._bvpRing, this._bvpRingSize - len);
+        } else {
+            ordered.set(this._bvpRing);
         }
+        this._postIfReady('psd', {
+            type: 'run',
+            payload: { inputData: ordered },
+        });
 
         // Accumulate BVP samples for HRV
         if (this.config.enableHrv) {

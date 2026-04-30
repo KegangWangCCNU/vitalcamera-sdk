@@ -195,11 +195,11 @@
             box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
         }
         #trend-wrapper {
-            flex: 1; height: 100%; display: flex; border-radius: 4px; overflow: hidden;
+            flex: 1; height: 100%; display: flex; border-radius: 4px;
             border: 1px solid var(--border); box-shadow: var(--shadow-sm), inset 0 1px 3px rgba(0,0,0,0.04);
         }
         .trend-y-axis {
-            width: 30px; height: calc(100% - 16px); display: flex; flex-direction: column;
+            width: 32px; height: 100%; display: flex; flex-direction: column;
             position: relative; border-right: 1px solid rgba(0,0,0,0.08);
         }
         .axis-label { position: absolute; right: 5px; font-size: 10px; color: var(--text-tertiary); transform: translateY(50%); }
@@ -351,7 +351,7 @@
 
 <script type="module">
 // ─── Imports ───
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.7/src/index.js';
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.8/src/index.js';
 import { FaceDetector, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm';
 
 
