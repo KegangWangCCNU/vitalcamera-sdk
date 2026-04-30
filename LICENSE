@@ -17,7 +17,7 @@ Privacy Protection Addendum
 By using or distributing this software, you agree to the following additional
 terms:
 
-1. Strict Local Processing: All biometric inference and signal processing must
-   be performed exclusively on the local device. You must NOT transmit, upload,
-   or stream user video feeds or physiological metrics to any external server or
-   cloud service for any purpose (storage, analytics, or remote
+1. Local Processing by Default: All biometric inference and signal processing
+   must be performed exclusively on the local device. You must NOT transmit,
+   upload, or stream user video feeds or physiological metrics to any external
+   server or cloud service, UNLESS the data subject has given explici
