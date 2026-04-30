@@ -213,4 +213,22 @@ If you use this SDK in your research, please cite the relevant papers:
   author    = {Vasu, Pavan Kumar Anasosalu and Gabriel, James and Zhu, Jeff
                and Tuzel, Oncel and Ranjan, Anurag},
   booktitle = {CVPR},
-  year      = {20
+  year      = {2023}
+}
+```
+
+## License
+
+MIT License with Privacy Protection Addendum — see [LICENSE](./LICENSE).
+
+By using or distributing this software, you agree to the following additional terms:
+
+1. **Strict Local Processing** — All biometric inference must be performed on the local device. You must NOT transmit user video feeds or physiological metrics to any external server.
+2. **Consent Requirement** — You shall not use this Software to collect physiological data from any individual without their explicit consent.
+3. **No Backdoors** — Redistributions must maintain these local-processing guarantees.
+
+See [NOTICE](./NOTICE) for full third-party attribution.
+
+---
+
+*This SDK was built with the assistance of [Claude Code](https://claude.ai/code) by Anthropic.*
