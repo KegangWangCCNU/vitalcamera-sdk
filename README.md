@@ -137,7 +137,7 @@ BrowserAdapter (optional)
 
 ## Models
 
-Models are **not included** in the npm package. You need to provide them as `ArrayBuffer` objects. Required models:
+Models are **included** in the npm package and git repository under `models/`. The SDK loads them automatically. Included models:
 
 | Model | File | Purpose |
 |-------|------|---------|
