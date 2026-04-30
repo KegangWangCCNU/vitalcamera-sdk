@@ -15,7 +15,7 @@
  *   -> init    { modelBuffer }           Load the gaze model
  *   <- initDone                          Model ready
  *   -> run     { imgData }               Estimate gaze for one face crop
- *   <- result  { angles: [yaw, pitch], time }
+ *   <- result  { angles: [yaw, pitch], confidence: [yawConf, pitchConf], time }
  *   <- error   { msg }                   On any thrown error
  */
 
@@ -61,20 +61,29 @@ function softmax(logits) {
 }
 
 /**
- * Decode a bin-classification logit vector into a single angle (radians).
+ * Decode a bin-classification logit vector into an angle (radians) and
+ * a confidence score (peak softmax probability).
+ *
  * Uses soft-argmax: expected bin index from softmax probabilities, then
- * converts to degrees and finally radians.
+ * converts to degrees and finally radians. The peak probability indicates
+ * how confident the model is — low values (near 1/NUM_BINS ≈ 0.011)
+ * suggest the model cannot determine the angle (e.g. during a blink).
  *
  * @param {Float32Array|number[]} logits - Raw logits of length NUM_BINS
- * @returns {number} Angle in radians
+ * @returns {{ angle: number, confidence: number }} Angle in radians and peak probability
  */
 function decodeAngle(logits) {
     const probs = softmax(logits);
     let angle = 0;
+    let maxProb = 0;
     for (let i = 0; i < NUM_BINS; i++) {
         angle += probs[i] * i;
+        if (probs[i] > maxProb) maxProb = probs[i];
     }
-    return (angle * BIN_WIDTH - ANGLE_OFFSET) * Math.PI / 180; // radians
+    return {
+        angle: (angle * BIN_WIDTH - ANGLE_OFFSET) * Math.PI / 180,
+        confidence: maxProb,
+    };
 }
 
 /* ── Exported for testing (Node.js only) ── */
@@ -142,14 +151,15 @@ async function handleRun({ imgData }) {
     results[0].delete();
     results[1].delete();
 
-    const angle0 = decodeAngle(out0);
-    const angle1 = decodeAngle(out1);
+    const r0 = decodeAngle(out0);
+    const r1 = decodeAngle(out1);
     const end = performance.now();
 
     self.postMessage({
         type: 'result',
         payload: {
-            angles: [angle0, angle1],
+            angles: [r0.angle, r1.angle],
+            confidence: [r0.confidence, r1.confidence],
             time: end - start,
         }
     });

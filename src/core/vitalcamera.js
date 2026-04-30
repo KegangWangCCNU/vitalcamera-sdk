@@ -61,6 +61,7 @@ const DEFAULTS = {
     hrvMinDuration: 15,       // seconds
     hrvUpdateInterval: 1000,  // ms
     sqiThreshold: 0.6,
+    gazeConfidenceThreshold: 0.04,
 };
 
 
@@ -138,6 +139,7 @@ class VitalCamera {
      * @param {number}  [config.hrvMinDuration=15]
      * @param {number}  [config.hrvUpdateInterval=1000]
      * @param {number}  [config.sqiThreshold=0.6]
+     * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
      */
     constructor(config = {}) {
         // Mix in EventEmitter
@@ -180,6 +182,9 @@ class VitalCamera {
         // Frame counter for periodic state export
         this._frameCount = 0;
         this._stateExportInterval = 60; // export every 60 frames
+
+        // Last accepted gaze result (used when current frame is filtered out)
+        this._lastGaze = null;
     }
 
     // -----------------------------------------------------------------------
@@ -476,18 +481,34 @@ class VitalCamera {
     }
 
     /**
-     * Handle gaze result.
+     * Handle gaze result.  If the softmax confidence for either axis falls
+     * below `gazeConfidenceThreshold` (e.g. during a blink) the measurement
+     * is discarded and no event is emitted — the consumer keeps whatever
+     * the previous value was.
      * @private
      */
     _onGazeResult(data) {
-        const { angles, time } = data;
+        const { angles, confidence, time } = data;
         if (!angles || angles.length < 2) return;
-        this.emit('gaze', {
+
+        // Filter low-confidence frames (blinks / closed eyes)
+        if (confidence && confidence.length >= 2) {
+            const minConf = Math.min(confidence[0], confidence[1]);
+            if (minConf < this.config.gazeConfidenceThreshold) {
+                // Confidence too low — skip this frame, keep last accepted gaze
+                return;
+            }
+        }
+
+        const gazeEvent = {
             yaw: angles[0],
             pitch: angles[1],
+            confidence: confidence || null,
             time,
             timestamp: Date.now(),
-        });
+        };
+        this._lastGaze = gazeEvent;
+        this.emit('gaze', gazeEvent);
     }
 
     // -----------------------------------------------------------------------
