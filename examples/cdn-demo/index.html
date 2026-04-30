@@ -72,8 +72,8 @@
             border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow-md);
         }
         #video-frame canvas {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            min-width: 100%; min-height: 100%; object-fit: cover;
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
         }
         #heartbeat {
             position: absolute; top: 12px; right: 14px; width: 36px; height: 36px;
@@ -257,6 +257,7 @@
             <canvas id="trendCanvas"></canvas>
         </div>
     </div>
+    <button id="saveBtn" style="width:80px;flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;font-family:inherit;box-shadow:var(--shadow-md);">SAVE<br><span style='font-size:10px;opacity:0.8'>(.ZIP)</span></button>
 </div>
 
 <video id="videoInput" playsinline webkit-playsinline muted style="display:none"></video>
@@ -538,9 +539,9 @@ async function init() {
 
     // Head pose
     vc.on('headpose', ({ yaw, pitch, roll }) => {
-        document.getElementById('headYaw').textContent = (yaw * 180 / Math.PI).toFixed(1) + '\u00b0';
-        document.getElementById('headPitch').textContent = (pitch * 180 / Math.PI).toFixed(1) + '\u00b0';
-        document.getElementById('headRoll').textContent = (roll * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('headYaw').textContent = yaw.toFixed(1) + '\u00b0';
+        document.getElementById('headPitch').textContent = pitch.toFixed(1) + '\u00b0';
+        document.getElementById('headRoll').textContent = roll.toFixed(1) + '\u00b0';
     });
 
     // Face — draw preview + overlay
@@ -596,6 +597,11 @@ async function init() {
 // SDK module loaded successfully — enable start button
 startBtn.disabled = false;
 startBtn.textContent = 'Start';
+
+// ─── Save data as ZIP ───
+document.getElementById('saveBtn').addEventListener('click', () => {
+    alert('Save functionality coming soon — will export HR, HRV, emotion, gaze logs as a .zip file.');
+});
 
 startBtn.addEventListener('click', init);
 </script>
