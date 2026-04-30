@@ -60,7 +60,7 @@ const DEFAULTS = {
     hrvTargetFs: 200,
     hrvMinDuration: 15,       // seconds
     hrvUpdateInterval: 1000,  // ms
-    sqiThreshold: 0.6,
+    sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
 };
 
@@ -138,7 +138,7 @@ class VitalCamera {
      * @param {number}  [config.hrvTargetFs=200]
      * @param {number}  [config.hrvMinDuration=15]
      * @param {number}  [config.hrvUpdateInterval=1000]
-     * @param {number}  [config.sqiThreshold=0.6]
+     * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
      */
     constructor(config = {}) {
