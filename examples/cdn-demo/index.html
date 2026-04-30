@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Vital Camera — CDN Demo</title>
+    <style>
+        :root {
+            --bg: #f5f0e8; --surface: #ffffff; --text-primary: #1a1a1a;
+            --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+            --border: rgba(0,0,0,0.12); --accent: #c96442;
+            --radius: 12px; --radius-sm: 8px;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --shadow-md: 0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg); color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            min-height: 100vh; width: 100vw; display: flex; justify-content: center;
+            padding: 16px 16px 112px 16px; overflow-x: hidden;
+            user-select: none; -webkit-user-select: none; -webkit-font-smoothing: antialiased;
+        }
+        #app { width: 960px; margin: 0 auto; }
+        .title-bar {
+            padding: 8px 2px 16px 2px; display: flex; justify-content: space-between; align-items: center;
+        }
+        .app-title {
+            font-family: 'Times New Roman', Georgia, serif; font-weight: 400;
+            font-size: 42px; line-height: 1; letter-spacing: -1px; font-style: italic;
+        }
+        .app-title .accent { color: var(--accent); }
+        .sdk-badge {
+            font-size: 11px; color: var(--text-tertiary); background: rgba(0,0,0,0.04);
+            padding: 4px 10px; border-radius: 12px;
+        }
+        .sdk-badge a { color: var(--accent); text-decoration: none; }
+        #main-content { display: flex; gap: 12px; }
+        #data-col {
+            flex: 1; display: flex; flex-direction: column; gap: 10px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: var(--shadow-md); padding: 12px;
+        }
+        #video-col {
+            width: 480px; flex-shrink: 0; display: flex; flex-direction: column;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: var(--shadow-md); padding: 12px;
+        }
+        @media (max-width: 800px) {
+            body { padding-top: 12px; }
+            #app { width: 100%; max-width: 520px; }
+            #main-content { flex-direction: column; }
+            #video-col { width: 100%; }
+            #video-frame { aspect-ratio: 4 / 3 !important; }
+            #emotion-panel { flex: 0 0 auto !important; }
+        }
+
+        /* Stats grid */
+        #stats-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .stat-item {
+            background: #f7f3ec; border-radius: var(--radius-sm); padding: 10px 12px;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .stat-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; }
+        .stat-val { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
+        .stat-val.active { color: var(--accent); }
+
+        /* Video */
+        #video-frame {
+            width: 100%; min-height: 200px; position: relative; background: #e8e2d8;
+            overflow: hidden; display: flex; justify-content: center; align-items: center;
+            border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow-md);
+        }
+        #video-frame canvas {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            min-width: 100%; min-height: 100%; object-fit: cover;
+        }
+        #heartbeat {
+            position: absolute; top: 12px; right: 14px; width: 36px; height: 36px;
+            z-index: 10; opacity: 0.9; pointer-events: none;
+        }
+        #startBtn {
+            position: absolute; z-index: 50; padding: 8px 28px; height: 40px;
+            background: var(--accent); color: #fff; font-weight: 500; font-size: 14px;
+            border: none; border-radius: 20px; cursor: pointer; font-family: inherit;
+            box-shadow: var(--shadow-md);
+        }
+        #startBtn:hover { opacity: 0.9; }
+        #startBtn:disabled { background: #c4b8ac; cursor: wait; }
+
+        /* Gaze & Head */
+        #gaze-head-row { display: flex; gap: 8px; }
+        #gaze-panel, #head-panel {
+            background: #f2eee6; border-radius: var(--radius-sm); padding: 10px;
+            display: flex; align-items: center; gap: 10px; flex: 1;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .viz-circle {
+            width: 48px; height: 48px; background: var(--surface);
+            border: 1px solid var(--border); position: relative; flex-shrink: 0; border-radius: 50%;
+        }
+        .viz-crosshair-h, .viz-crosshair-v { position: absolute; background: rgba(0,0,0,0.08); }
+        .viz-crosshair-h { width: 100%; height: 0.5px; top: 50%; }
+        .viz-crosshair-v { height: 100%; width: 0.5px; left: 50%; }
+        #gazePointer {
+            position: absolute; width: 8px; height: 8px; background: var(--accent);
+            border-radius: 50%; transform: translate(-50%, -50%); left: 50%; top: 50%;
+            transition: left 0.15s, top 0.15s;
+        }
+        #headArrow { position: absolute; width: 100%; height: 100%; transition: transform 0.15s; }
+        #headArrow line { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
+        #headArrow polygon { fill: var(--accent); }
+        .panel-info { display: flex; flex-direction: column; gap: 2px; font-size: 12px; flex: 1; }
+        .panel-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .gaze-row { display: flex; justify-content: space-between; }
+        .gaze-label { color: var(--text-tertiary); }
+        .gaze-val { font-weight: 500; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+        /* Emotion */
+        #emotion-panel {
+            background: linear-gradient(180deg, #f5f1ea 0%, #f0ebe3 100%);
+            border-radius: var(--radius-sm); padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 2px; flex: 1; justify-content: center;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+        }
+        #emotion-top { display: flex; align-items: center; gap: 8px; padding: 2px 0 6px; }
+        #emotionEmoji { font-size: 24px; }
+        #emotionLabel { font-weight: 500; font-size: 15px; flex: 1; }
+        .emo-bar-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+        .emo-bar-name { font-size: 12px; width: 68px; text-align: right; flex-shrink: 0; color: var(--text-secondary); }
+        .emo-bar-track { flex: 1; height: 5px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden; }
+        .emo-bar-fill { height: 100%; width: 0%; border-radius: 3px; transition: width 0.2s; }
+        .emo-bar-pct { font-size: 12px; width: 34px; text-align: right; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+        /* BVP Waveform */
+        #wave-frame {
+            height: 90px; background: #eee9e0; border-radius: var(--radius-sm);
+            position: relative; overflow: hidden; flex-shrink: 0;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+        }
+        #wave-frame canvas { width: 100%; height: 100%; display: block; }
+
+        /* Bottom bar */
+        #bottom-bar {
+            position: fixed; bottom: 0; left: 0; width: 100vw; height: 100px;
+            z-index: 1000; display: flex; gap: 8px; padding: 8px 16px;
+            background: var(--surface); border-top: 1px solid var(--border);
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.04);
+        }
+        #trend-wrapper {
+            flex: 1; height: 100%; display: flex; border-radius: 4px; overflow: hidden;
+            border: 1px solid var(--border); box-shadow: var(--shadow-sm), inset 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .trend-y-axis {
+            width: 30px; height: calc(100% - 16px); display: flex; flex-direction: column;
+            position: relative; border-right: 1px solid rgba(0,0,0,0.08);
+        }
+        .axis-label {
+            position: absolute; right: 5px; font-size: 10px; color: var(--text-tertiary);
+            transform: translateY(50%);
+        }
+        #trend-container { flex: 1; height: 100%; position: relative; }
+        #trend-title {
+            position: absolute; top: 4px; left: 8px; color: var(--text-tertiary);
+            font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; pointer-events: none;
+        }
+        #trend-container canvas { width: 100%; height: 100%; display: block; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="title-bar">
+        <span class="app-title"><span class="accent">Vital</span> Camera</span>
+        <span class="sdk-badge">Powered by <a href="https://github.com/KegangWangCCNU/vitalcamera-sdk" target="_blank">vitalcamera-sdk</a></span>
+    </div>
+
+    <div id="main-content">
+        <div id="data-col">
+            <div id="stats-group">
+                <div class="stat-item"><span class="stat-label">HR (BPM)</span><span id="hrVal" class="stat-val">--</span></div>
+                <div class="stat-item"><span class="stat-label">SQI</span><span id="sqiVal" class="stat-val">0.00</span></div>
+                <div class="stat-item"><span class="stat-label">Latency</span><span id="latencyVal" class="stat-val">0.0</span></div>
+                <div class="stat-item"><span class="stat-label">RMSSD (ms)</span><span id="rmssdVal" class="stat-val">--</span></div>
+                <div class="stat-item"><span class="stat-label">Frames</span><span id="frameVal" class="stat-val">0</span></div>
+                <div class="stat-item"><span class="stat-label">FPS</span><span id="fpsVal" class="stat-val">0</span></div>
+            </div>
+
+            <div id="gaze-head-row">
+                <div id="head-panel">
+                    <div class="viz-circle">
+                        <div class="viz-crosshair-h"></div><div class="viz-crosshair-v"></div>
+                        <svg id="headArrow" viewBox="0 0 50 50">
+                            <line id="headArrowLine" x1="25" y1="25" x2="25" y2="8"/>
+                            <polygon id="headArrowHead" points="25,5 22,11 28,11"/>
+                        </svg>
+                    </div>
+                    <div class="panel-info">
+                        <span class="panel-title">Head</span>
+                        <div class="gaze-row"><span class="gaze-label">Yaw</span><span class="gaze-val" id="headYaw">--</span></div>
+                        <div class="gaze-row"><span class="gaze-label">Pitch</span><span class="gaze-val" id="headPitch">--</span></div>
+                        <div class="gaze-row"><span class="gaze-label">Roll</span><span class="gaze-val" id="headRoll">--</span></div>
+                    </div>
+                </div>
+                <div id="gaze-panel">
+                    <div class="viz-circle">
+                        <div class="viz-crosshair-h"></div><div class="viz-crosshair-v"></div>
+                        <div id="gazePointer"></div>
+                    </div>
+                    <div class="panel-info">
+                        <span class="panel-title">Gaze</span>
+                        <div class="gaze-row"><span class="gaze-label">Yaw</span><span class="gaze-val" id="gazeYaw">--</span></div>
+                        <div class="gaze-row"><span class="gaze-label">Pitch</span><span class="gaze-val" id="gazePitch">--</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="emotion-panel">
+                <div id="emotion-top">
+                    <span id="emotionEmoji">--</span>
+                    <span id="emotionLabel">Waiting...</span>
+                </div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Anger</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_0" style="background:#c96442"></div></div><span class="emo-bar-pct" id="emoPct_0">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Contempt</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_1" style="background:#c9964a"></div></div><span class="emo-bar-pct" id="emoPct_1">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Disgust</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_2" style="background:#8b7bb5"></div></div><span class="emo-bar-pct" id="emoPct_2">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Fear</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_3" style="background:#5a9e6f"></div></div><span class="emo-bar-pct" id="emoPct_3">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Happiness</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_4" style="background:#c9a84a"></div></div><span class="emo-bar-pct" id="emoPct_4">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Neutral</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_5" style="background:#5a8fa8"></div></div><span class="emo-bar-pct" id="emoPct_5">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Sadness</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_6" style="background:#5a9e8f"></div></div><span class="emo-bar-pct" id="emoPct_6">0%</span></div>
+                <div class="emo-bar-row"><span class="emo-bar-name">Surprise</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_7" style="background:#b5637a"></div></div><span class="emo-bar-pct" id="emoPct_7">0%</span></div>
+            </div>
+
+            <div id="wave-frame">
+                <button id="startBtn" disabled>Loading SDK...</button>
+                <canvas id="plotCanvas"></canvas>
+            </div>
+        </div>
+
+        <div id="video-col">
+            <div id="video-frame">
+                <canvas id="previewCanvas"></canvas>
+                <canvas id="overlayCanvas"></canvas>
+                <svg id="heartbeat" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="#c96442"/></svg>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="bottom-bar">
+    <div id="trend-wrapper">
+        <div class="trend-y-axis">
+            <span class="axis-label" style="bottom:71.4%">140</span>
+            <span class="axis-label" style="bottom:42.8%">100</span>
+            <span class="axis-label" style="bottom:19%">60</span>
+        </div>
+        <div id="trend-container">
+            <span id="trend-title">HR TREND</span>
+            <canvas id="trendCanvas"></canvas>
+        </div>
+    </div>
+</div>
+
+<video id="videoInput" playsinline webkit-playsinline muted style="display:none"></video>
+
+<script type="module">
+// ─── Import SDK from CDN ───
+import BrowserAdapter from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.5/src/adapter/browser.js';
+import { KalmanFilter1D } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.5/src/index.js';
+
+// ─── Import MediaPipe for face detection ───
+import { FaceDetector, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm';
+
+// ─── Constants ───
+const EMOTION_LABELS = ['Anger','Contempt','Disgust','Fear','Happiness','Neutral','Sadness','Surprise'];
+const EMOTION_EMOJIS = ['\u{1F620}','\u{1F612}','\u{1F922}','\u{1F628}','\u{1F604}','\u{1F610}','\u{1F622}','\u{1F632}'];
+const MODEL_FILES = {
+    rppg:    './models/model.tflite',
+    rppgProj:'./models/proj.tflite',
+    sqi:     './models/sqi_model.tflite',
+    psd:     './models/psd_model.tflite',
+    state:   './models/state.gz',
+    emotion: './models/enet_b0_8_best_vgaf_dynamic_int8.tflite',
+    gaze:    './models/mobileone_s0_gaze_float16.tflite',
+};
+
+// ─── DOM Elements ───
+const startBtn    = document.getElementById('startBtn');
+const videoEl     = document.getElementById('videoInput');
+const previewCanvas  = document.getElementById('previewCanvas');
+const overlayCanvas  = document.getElementById('overlayCanvas');
+const previewCtx  = previewCanvas.getContext('2d', { alpha: false });
+const overlayCtx  = overlayCanvas.getContext('2d');
+const plotCanvas   = document.getElementById('plotCanvas');
+const trendCanvas  = document.getElementById('trendCanvas');
+
+previewCtx.fillStyle = '#e8e2d8';
+previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+// ─── State ───
+let adapter = null;
+let faceDetector = null;
+let isRunning = false;
+let frameCount = 0;
+let lastFpsTime = 0;
+let lastFrameCount = 0;
+let lastLatencyUpdateTime = 0;
+
+// ── Kalman filters for emotion (8 classes) — matches original FacePhys ──
+let kfEmotions = null;              // KalmanFilter1D[8]
+let smoothedEmotionProbs = null;    // Float32Array[8]
+
+// ── Kalman filters for gaze — matches original parameters ──
+let kfGazeYaw = null, kfGazePitch = null;
+let currentGazeYaw = 0, currentGazePitch = 0;
+
+// ── Heartbeat animation state ──
+let beatTimer = null;
+
+// ─── Load models ───
+async function loadModels() {
+    const entries = Object.entries(MODEL_FILES);
+    const buffers = {};
+    await Promise.all(entries.map(async ([key, url]) => {
+        const resp = await fetch(url);
+        buffers[key] = await resp.arrayBuffer();
+    }));
+    return buffers;
+}
+
+// ─── Create MediaPipe face detector ───
+async function createFaceDetector() {
+    const vision = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
+    );
+    return await FaceDetector.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' },
+        runningMode: 'IMAGE', minDetectionConfidence: 0.5,
+    });
+}
+
+// ─── Per-frame emotion display update with Kalman predict ──
+function updateEmotionDisplay() {
+    if (!kfEmotions || !smoothedEmotionProbs) return;
+
+    // Predict-only step: grow uncertainty so next measurement is weighted properly
+    for (let i = 0; i < kfEmotions.length; i++) {
+        smoothedEmotionProbs[i] = kfEmotions[i].predict();
+    }
+
+    // Normalize so probabilities sum to 1
+    let sum = 0;
+    for (let i = 0; i < smoothedEmotionProbs.length; i++) {
+        smoothedEmotionProbs[i] = Math.max(0, smoothedEmotionProbs[i]);
+        sum += smoothedEmotionProbs[i];
+    }
+    if (sum > 0) {
+        for (let i = 0; i < smoothedEmotionProbs.length; i++) {
+            smoothedEmotionProbs[i] /= sum;
+        }
+    }
+
+    // Find dominant emotion
+    let topIdx = 0;
+    for (let i = 1; i < smoothedEmotionProbs.length; i++) {
+        if (smoothedEmotionProbs[i] > smoothedEmotionProbs[topIdx]) topIdx = i;
+    }
+
+    document.getElementById('emotionEmoji').textContent = EMOTION_EMOJIS[topIdx];
+    document.getElementById('emotionLabel').textContent = EMOTION_LABELS[topIdx];
+
+    for (let i = 0; i < smoothedEmotionProbs.length; i++) {
+        const bar = document.getElementById('emoBar_' + i);
+        const pct = document.getElementById('emoPct_' + i);
+        if (bar) bar.style.width = (smoothedEmotionProbs[i] * 100).toFixed(1) + '%';
+        if (pct) pct.textContent = (smoothedEmotionProbs[i] * 100).toFixed(0) + '%';
+    }
+}
+
+// ─── Per-frame gaze display update with Kalman predict ──
+function updateGazeDisplay() {
+    if (!kfGazeYaw) return;
+
+    kfGazeYaw.predict();
+    kfGazePitch.predict();
+
+    const yawDeg = currentGazeYaw.toFixed(1);
+    const pitchDeg = currentGazePitch.toFixed(1);
+
+    document.getElementById('gazeYaw').textContent = yawDeg + '°';
+    document.getElementById('gazePitch').textContent = pitchDeg + '°';
+
+    const ptr = document.getElementById('gazePointer');
+    if (ptr) {
+        const clampDeg = 60;
+        const nx = Math.max(-clampDeg, Math.min(clampDeg, parseFloat(yawDeg))) / clampDeg;
+        const ny = Math.max(-clampDeg, Math.min(clampDeg, parseFloat(pitchDeg))) / clampDeg;
+        ptr.style.left = (50 - nx * 45) + '%';
+        ptr.style.top  = (50 - ny * 45) + '%';
+    }
+}
+
+// ─── Heartbeat animation (4-phase cardiac cycle from original) ──
+function triggerHeartbeat(ibi) {
+    const el = document.getElementById('heartbeat');
+    if (!el) return;
+    if (beatTimer) clearTimeout(beatTimer);
+    const dur = Math.max(120, Math.min((ibi || 800) * 0.35, 400));
+    el.style.transition = 'transform 0.08s ease-out, opacity 0.08s ease-out';
+    el.style.transform = 'scale(1.7)';
+    el.style.opacity = '1';
+    beatTimer = setTimeout(() => {
+        el.style.transition = `transform ${dur * 0.3}ms ease-in-out, opacity ${dur * 0.3}ms ease-in-out`;
+        el.style.transform = 'scale(1.15)';
+        el.style.opacity = '0.9';
+        beatTimer = setTimeout(() => {
+            el.style.transition = 'transform 0.06s ease-out, opacity 0.06s ease-out';
+            el.style.transform = 'scale(1.35)';
+            el.style.opacity = '1';
+            beatTimer = setTimeout(() => {
+                el.style.transition = `transform ${dur * 0.4}ms ease-in, opacity ${dur * 0.4}ms ease-in`;
+                el.style.transform = 'scale(1)';
+                el.style.opacity = '0.85';
+                beatTimer = null;
+            }, 60);
+        }, dur * 0.3);
+    }, 80);
+}
+
+// ─── Per-frame UI update loop ──
+function uiTick() {
+    if (!isRunning) return;
+    updateEmotionDisplay();
+    updateGazeDisplay();
+    requestAnimationFrame(uiTick);
+}
+
+// ─── Initialize ───
+async function init() {
+    startBtn.textContent = 'Loading models...';
+
+    const [models, detector] = await Promise.all([loadModels(), createFaceDetector()]);
+    faceDetector = detector;
+
+    const customDetector = async (source) => {
+        const result = faceDetector.detect(source);
+        if (!result.detections || result.detections.length === 0) return null;
+        const det = result.detections[0];
+        const bb = det.boundingBox;
+        const box = { x: bb.originX, y: bb.originY, w: bb.width, h: bb.height };
+        const keypoints = (det.keypoints || []).map(kp => ({
+            x: kp.x * (source.width || source.videoWidth || 640),
+            y: kp.y * (source.height || source.videoHeight || 480),
+        }));
+        return { box, keypoints };
+    };
+
+    // Pre-size canvases (pixel size for HiDPI)
+    const dpr = devicePixelRatio || 1;
+    const bvpRect = plotCanvas.parentElement.getBoundingClientRect();
+    plotCanvas.width = bvpRect.width * dpr;
+    plotCanvas.height = bvpRect.height * dpr;
+    const trendRect = trendCanvas.parentElement.getBoundingClientRect();
+    trendCanvas.width = trendRect.width * dpr;
+    trendCanvas.height = trendRect.height * dpr;
+
+    adapter = new BrowserAdapter({
+        videoElement: videoEl,
+        models: {
+            rppg: models.rppg, rppgProj: models.rppgProj,
+            sqi: models.sqi, psd: models.psd,
+            state: models.state,
+            emotion: models.emotion, gaze: models.gaze,
+        },
+        faceDetector: customDetector,
+        canvases: { bvp: plotCanvas, trend: trendCanvas },
+    });
+
+    await adapter.init();
+
+    // ─── Subscribe to SDK events ───
+    const vc = adapter.vitalcamera;
+
+    // Heart rate + SQI
+    vc.on('heartrate', ({ hr, sqi }) => {
+        const now = performance.now();
+        if (now - lastLatencyUpdateTime > 500) {
+            document.getElementById('hrVal').textContent = hr.toFixed(1);
+            document.getElementById('hrVal').classList.toggle('active', sqi > 0.5);
+            document.getElementById('sqiVal').textContent = sqi.toFixed(2);
+            lastLatencyUpdateTime = now;
+        }
+    });
+
+    // HRV
+    vc.on('hrv', ({ rmssd }) => {
+        document.getElementById('rmssdVal').textContent = rmssd?.toFixed(1) ?? '--';
+    });
+
+    // Emotion — Kalman update (measurement arrives every ~500ms)
+    vc.on('em
