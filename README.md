@@ -2,6 +2,8 @@
 
 Browser-based real-time physiological sensing — extract heart rate, HRV, emotion, gaze direction, and head pose from a standard webcam. No wearables needed.
 
+**[Live Demo](https://kegangwangccnu.github.io/vitalcamera-sdk/examples/demo.html)** · **[Documentation](https://kegangwangccnu.github.io/vitalcamera-sdk/docs/)**
+
 ## Features
 
 - **Heart Rate (rPPG)** — remote photoplethysmography via face video using State Space Models
