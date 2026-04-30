@@ -59,7 +59,9 @@ const DEFAULTS = {
     enableHrv: true,
     hrvTargetFs: 200,
     hrvMinDuration: 15,       // seconds
+    hrvMaxWindow: 120,        // seconds — sliding window cap (2 minutes)
     hrvUpdateInterval: 1000,  // ms
+    hrvSqiThreshold: 0.6,     // only accumulate BVP samples with SQI above this
     sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
 };
@@ -137,7 +139,9 @@ class VitalCamera {
      * @param {boolean} [config.enableHrv=true]
      * @param {number}  [config.hrvTargetFs=200]
      * @param {number}  [config.hrvMinDuration=15]
+     * @param {number}  [config.hrvMaxWindow=120]         Max BVP window in seconds (default 2 min)
      * @param {number}  [config.hrvUpdateInterval=1000]
+     * @param {number}  [config.hrvSqiThreshold=0.6]      Min SQI to accept BVP sample for HRV
      * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
      */
@@ -172,6 +176,7 @@ class VitalCamera {
 
         // Latest heart rate for peak validation
         this._lastHR = null;
+        this._lastSqi = 0;
 
         // Smoothed frame dt (updated each processFrame call)
         this._dval = 1 / 30;
@@ -267,6 +272,7 @@ class VitalCamera {
         this._bvpRing = [];
         this._lastHrvTime = 0;
         this._lastHR = null;
+        this._lastSqi = 0;
     }
 
     /** Pause processing (workers stay alive). */
@@ -438,9 +444,17 @@ class VitalCamera {
             });
         }
 
-        // Accumulate BVP samples for HRV
-        if (this.config.enableHrv) {
+        // Accumulate BVP samples for HRV (only if SQI is good enough)
+        if (this.config.enableHrv && this._lastSqi >= this.config.hrvSqiThreshold) {
             this._bvpSamples.push({ t: timestamp, v: value });
+
+            // Trim to sliding window (default 2 min)
+            const maxMs = this.config.hrvMaxWindow * 1000;
+            while (this._bvpSamples.length > 1 &&
+                   timestamp - this._bvpSamples[0].t > maxMs) {
+                this._bvpSamples.shift();
+            }
+
             this._maybeComputeHrv(timestamp);
         }
     }
@@ -458,6 +472,7 @@ class VitalCamera {
         this._lastHR = correctedHr;
 
         const sqiVal = sqi != null ? sqi : 0;
+        this._lastSqi = sqiVal;
         this.emit('heartrate', {
             hr: correctedHr,
             sqi: sqiVal,
