@@ -63,6 +63,58 @@ const DEFAULTS = {
     sqiThreshold: 0.6,
 };
 
+
+// ---------------------------------------------------------------------------
+// IndexedDB state cache — persist inference warm-start state across sessions
+// ---------------------------------------------------------------------------
+
+const IDB_NAME = 'VitalCameraSDK';
+const IDB_STORE = 'states';
+const IDB_KEY = 'inferenceState';
+
+/** @returns {Promise<IDBDatabase>} */
+function _openIDB() {
+    return new Promise((resolve, reject) => {
+        try {
+            const req = indexedDB.open(IDB_NAME, 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(IDB_STORE)) {
+                    db.createObjectStore(IDB_STORE);
+                }
+            };
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = () => reject(req.error);
+        } catch (_) {
+            reject(new Error('IndexedDB not available'));
+        }
+    });
+}
+
+async function _loadCachedState() {
+    try {
+        const db = await _openIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readonly');
+            const req = tx.objectStore(IDB_STORE).get(IDB_KEY);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+        });
+    } catch (_) {
+        return null;
+    }
+}
+
+async function _saveCachedState(stateData) {
+    try {
+        const db = await _openIDB();
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(stateData, IDB_KEY);
+    } catch (_) {
+        /* IndexedDB unavailable — silently skip */
+    }
+}
+
 // ---------------------------------------------------------------------------
 // VitalCamera
 // ---------------------------------------------------------------------------
@@ -123,6 +175,10 @@ class VitalCamera {
 
         // Decompressed state JSON for inference worker warm-start
         this._stateJson = null;
+
+        // Frame counter for periodic state export
+        this._frameCount = 0;
+        this._stateExportInterval = 60; // export every 60 frames
     }
 
     // -----------------------------------------------------------------------
@@ -134,13 +190,20 @@ class VitalCamera {
      * @returns {Promise<void>}
      */
     async init() {
-        // Decompress gzip state for inference warm-start (if provided)
-        if (this.models.state && !this._stateJson) {
-            try {
-                const ds = new DecompressionStream('gzip');
-                const reader = new Blob([this.models.state]).stream().pipeThrough(ds);
-                this._stateJson = await new Response(reader).json();
-            } catch (_) {
+        // Load inference state: prefer IndexedDB cache, fallback to gzip
+        if (!this._stateJson) {
+            const cached = await _loadCachedState();
+            if (cached) {
+                this._stateJson = cached;
+            } else if (this.models.state) {
+                try {
+                    const ds = new DecompressionStream('gzip');
+                    const reader = new Blob([this.models.state]).stream().pipeThrough(ds);
+                    this._stateJson = await new Response(reader).json();
+                } catch (_) {
+                    this._stateJson = {};
+                }
+            } else {
                 this._stateJson = {};
             }
         }
@@ -296,6 +359,7 @@ class VitalCamera {
         }
 
         if (type === 'state_exported') {
+            _saveCachedState(data.payload);
             this.emit('state_exported', data.payload);
             return;
         }
@@ -332,6 +396,12 @@ class VitalCamera {
 
         // Emit raw BVP (including inference time for latency display)
         this.emit('bvp', { value, timestamp, time });
+
+        // Periodic state export for IndexedDB caching
+        this._frameCount++;
+        if (this._frameCount % this._stateExportInterval === 0) {
+            this._postIfReady('inference', { type: 'export_state' });
+        }
 
         // Peak detection → beat events
         const beat = this._peakDetector.process(timestamp, value, this._lastHR);
@@ -386,10 +456,11 @@ class VitalCamera {
      * @private
      */
     _onEmotionResult(data) {
-        const { emotion, probs } = data;
+        const { emotion, probs, time } = data;
         this.emit('emotion', {
             emotion: emotion || '',
             probs: probs || [],
+            time,
             timestamp: Date.now(),
         });
     }
@@ -399,11 +470,12 @@ class VitalCamera {
      * @private
      */
     _onGazeResult(data) {
-        const { angles } = data;
+        const { angles, time } = data;
         if (!angles || angles.length < 2) return;
         this.emit('gaze', {
             yaw: angles[0],
             pitch: angles[1],
+            time,
             timestamp: Date.now(),
         });
     }

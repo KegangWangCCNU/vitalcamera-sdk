@@ -154,9 +154,10 @@ export default class BrowserAdapter {
      *        the camera and sets video.srcObject. Set to false if you manage
      *        the MediaStream yourself but still want the auto frame loop.
      */
-    constructor(config) {
+    constructor(config = {}) {
         this._video = config.videoElement || null;
-        this._models = config.models;
+        this._models = config.models || null;
+        this._modelBasePath = config.modelBasePath || './models/';
         this._vsConfig = config.vitalcameraConfig || {};
         this._workerBasePath = config.workerBasePath || null;
         this._cameraFacing = config.cameraFacing || 'user';
@@ -217,6 +218,11 @@ export default class BrowserAdapter {
      * the camera (only if videoElement was provided and manageCamera is true).
      */
     async init() {
+        // 0. Auto-load models if not provided
+        if (!this._models) {
+            this._models = await BrowserAdapter.loadModels(this._modelBasePath);
+        }
+
         // 1. Create VitalCamera core
         this._vs = new VitalCamera({
             ...this._vsConfig,
@@ -611,5 +617,51 @@ export default class BrowserAdapter {
 
         return { box, keypoints };
     }
+
+    // ──────────────────────── Static constants ─────────────────────────
+
+    /** Emotion class labels (8-class model output order). */
+    static EMOTION_LABELS = ['Anger','Contempt','Disgust','Fear','Happiness','Neutral','Sadness','Surprise'];
+
+    /** Emoji for each emotion class (same order as labels). */
+    static EMOTION_EMOJIS = ['\u{1F620}','\u{1F612}','\u{1F922}','\u{1F628}','\u{1F604}','\u{1F610}','\u{1F622}','\u{1F632}'];
+
+    /** Color for each emotion class bar chart (same order as labels). */
+    static EMOTION_COLORS = ['#c96442','#c9964a','#8b7bb5','#5a9e6f','#c9a84a','#5a8fa8','#5a9e8f','#b5637a'];
+
+    /** Default model filenames — maps internal keys to default filenames. */
+    static MODEL_FILES = {
+        rppg:     'model.tflite',
+        rppgProj: 'proj.tflite',
+        sqi:      'sqi_model.tflite',
+        psd:      'psd_model.tflite',
+        state:    'state.gz',
+        emotion:  'enet_b0_8_best_vgaf_dynamic_int8.tflite',
+        gaze:     'mobileone_s0_gaze_float16.tflite',
+    };
+
+    /**
+     * Load all model files from a base path.
+     * @param {string} basePath  Path to models directory (default './models/')
+     * @param {Object} [options]
+     * @param {boolean} [options.emotion=true]  Load the emotion model.
+     * @param {boolean} [options.gaze=true]     Load the gaze model.
+     * @returns {Promise<Object>} Model buffers ready for VitalCamera.
+     */
+    static async loadModels(basePath = './models/', options = {}) {
+        const { emotion = true, gaze = true } = options;
+        const base = basePath.endsWith('/') ? basePath : basePath + '/';
+        const keys = ['rppg', 'rppgProj', 'sqi', 'psd', 'state'];
+        if (emotion) keys.push('emotion');
+        if (gaze) keys.push('gaze');
+
+        const buffers = {};
+        await Promise.all(keys.map(async (key) => {
+            const url = base + BrowserAdapter.MODEL_FILES[key];
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`[VitalCamera] Failed to load model "${key}" from ${url} (${resp.status})`);
+            buffers[key] = await resp.arrayBuffer();
+        }));
+        return buffers;
+    }
 }
-    

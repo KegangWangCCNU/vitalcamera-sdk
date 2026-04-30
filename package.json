@@ -1,6 +1,6 @@
 {
   "name": "vitalcamera-sdk",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Browser-based real-time physiological sensing SDK: heart rate, HRV, emotion, gaze, head pose",
   "type": "module",
   "main": "src/index.js",
@@ -21,10 +21,20 @@
     "NOTICE"
   ],
   "keywords": [
-    "rppg", "heart-rate", "hrv", "emotion-recognition",
-    "gaze-estimation", "head-pose", "mediapipe", "litert",
-    "browser", "real-time", "physiological-sensing",
-    "vital-camera", "webcam", "face-detection"
+    "rppg",
+    "heart-rate",
+    "hrv",
+    "emotion-recognition",
+    "gaze-estimation",
+    "head-pose",
+    "mediapipe",
+    "litert",
+    "browser",
+    "real-time",
+    "physiological-sensing",
+    "vital-camera",
+    "webcam",
+    "face-detection"
   ],
   "author": "Kegang Wang",
   "license": "MIT",
