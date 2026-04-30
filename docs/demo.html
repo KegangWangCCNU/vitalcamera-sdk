@@ -351,9 +351,7 @@
 
 <script type="module">
 // ─── Imports ───
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.3/src/index.js';
-import { FaceDetector, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm';
-
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.5/src/index.js';
 
 
 // ─── DOM refs ───
@@ -377,7 +375,7 @@ previewCtx.fillStyle = '#e8e2d8';
 previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
 
 // ─── State ───
-let adapter = null, faceDetector = null, isRunning = false;
+let adapter = null, isRunning = false;
 let frameCount = 0, lastFpsTime = 0, lastFpsFrameCount = 0;
 
 // Kalman filters
@@ -388,17 +386,6 @@ let beatTimer = null;
 
 // Data logs for SAVE
 let bvpLog = [], hrLog = [], emotionLog = [], gazeLog = [], headLog = [], hrvLog = [];
-
-// ─── Create MediaPipe face detector ───
-async function createFaceDetector() {
-    const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
-    );
-    return await FaceDetector.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite' },
-        runningMode: 'IMAGE', minDetectionConfidence: 0.5,
-    });
-}
 
 // ─── Head arrow update (from original updateFaceNormal) ───
 function updateHeadArrow(yaw, pitch, roll) {
@@ -520,21 +507,6 @@ async function handleSaveData() {
 // ─── Init ───
 async function init() {
     largeStartBtn.textContent = 'Loading models...';
-    const detector = await createFaceDetector();
-    faceDetector = detector;
-
-    const customDetector = async (source) => {
-        const result = faceDetector.detect(source);
-        if (!result.detections || result.detections.length === 0) return null;
-        const det = result.detections[0];
-        const bb = det.boundingBox;
-        const box = { x: bb.originX, y: bb.originY, w: bb.width, h: bb.height };
-        const keypoints = (det.keypoints || []).map(kp => ({
-            x: kp.x * (source.width || source.videoWidth || 640),
-            y: kp.y * (source.height || source.videoHeight || 480),
-        }));
-        return { box, keypoints };
-    };
 
     // Pre-size canvases
     const dpr = devicePixelRatio || 1;
@@ -545,9 +517,8 @@ async function init() {
 
     adapter = new BrowserAdapter({
         videoElement: videoEl,
-        faceDetector: customDetector,
         canvases: { bvp: plotCanvas, trend: trendCanvas },
-        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.3/models/',
+        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.5/models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
     });
 

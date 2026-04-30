@@ -165,6 +165,7 @@ Expected files in `models/`:
 | `state.gz` | Warm-start state (required) |
 | `enet_b0_8_best_vgaf_dynamic_int8.tflite` | Emotion (optional) |
 | `mobileone_s0_gaze_float16.tflite` | Gaze (optional) |
+| `blaze_face_short_range.tflite` | MediaPipe face detector (auto-loaded by built-in detector) |
 
 ### Bring your own face detector
 

@@ -221,7 +221,8 @@ Emitted by BrowserAdapter every frame when a face is detected.
 ```javascript
 adapter.vitalcamera.on('face', (data) => {
   // data.box       — { x, y, w, h }
-  // data.keypoints — [{ x, y }, ...] (6 BlazeFace keypoints)
+  // data.keypoints — [{ x, y }, ...] (6 BlazeFace keypoints, pixel coords:
+  //                  right_eye, left_eye, nose_tip, mouth, right_ear, left_ear)
   // data.videoW    — number, video width
   // data.videoH    — number, video height
 });
