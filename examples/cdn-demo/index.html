@@ -538,9 +538,9 @@ async function init() {
 
     // Head pose
     vc.on('headpose', ({ yaw, pitch, roll }) => {
-        document.getElementById('yawVal').textContent = (yaw * 180 / Math.PI).toFixed(1) + '\u00b0';
-        document.getElementById('pitchVal').textContent = (pitch * 180 / Math.PI).toFixed(1) + '\u00b0';
-        document.getElementById('rollVal').textContent = (roll * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('headYaw').textContent = (yaw * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('headPitch').textContent = (pitch * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('headRoll').textContent = (roll * 180 / Math.PI).toFixed(1) + '\u00b0';
     });
 
     // Face — draw preview + overlay
@@ -571,8 +571,9 @@ async function init() {
             overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
         }
 
-        // FPS counter
+        // Frame + FPS counter
         frameCount++;
+        document.getElementById('frameVal').textContent = frameCount;
         const now = performance.now();
         if (now - lastFpsTime > 1000) {
             const fps = Math.round((frameCount - lastFrameCount) / ((now - lastFpsTime) / 1000));
@@ -591,6 +592,10 @@ async function init() {
     // Start per-frame UI update loop for Kalman predict
     requestAnimationFrame(uiTick);
 }
+
+// SDK module loaded successfully — enable start button
+startBtn.disabled = false;
+startBtn.textContent = 'Start';
 
 startBtn.addEventListener('click', init);
 </script>
