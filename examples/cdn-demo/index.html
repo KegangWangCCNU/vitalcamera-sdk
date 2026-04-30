@@ -496,4 +496,103 @@ async function init() {
     });
 
     // Emotion — Kalman update (measurement arrives every ~500ms)
-    vc.on('em
+    vc.on('emotion', ({ probs }) => {
+        if (!probs || probs.length === 0) return;
+
+        // Initialize Kalman filters on first result
+        if (!kfEmotions) {
+            kfEmotions = probs.map(p => new KalmanFilter1D(p, 0.02, 0.3));
+            smoothedEmotionProbs = new Float32Array(probs.length);
+        }
+
+        // Measurement update
+        for (let i = 0; i < probs.length; i++) {
+            smoothedEmotionProbs[i] = kfEmotions[i].update(probs[i]);
+        }
+    });
+
+    // Gaze — Kalman update (measurement arrives every ~200ms)
+    vc.on('gaze', ({ yaw, pitch }) => {
+        const yawRaw = yaw * (180 / Math.PI);
+        const pitchRaw = pitch * (180 / Math.PI);
+
+        if (!kfGazeYaw) {
+            kfGazeYaw = new KalmanFilter1D(yawRaw, 0.5, 0.5);
+            kfGazePitch = new KalmanFilter1D(pitchRaw, 0.5, 0.5);
+        }
+        currentGazeYaw = kfGazeYaw.update(yawRaw);
+        currentGazePitch = kfGazePitch.update(pitchRaw);
+    });
+
+    // Beat — trigger heartbeat animation
+    vc.on('beat', ({ ibi }) => {
+        triggerHeartbeat(ibi);
+    });
+
+    // BVP — latency display
+    vc.on('bvp', ({ time }) => {
+        if (time != null) {
+            document.getElementById('latencyVal').textContent = time.toFixed(1) + ' ms';
+        }
+    });
+
+    // Head pose
+    vc.on('headpose', ({ yaw, pitch, roll }) => {
+        document.getElementById('yawVal').textContent = (yaw * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('pitchVal').textContent = (pitch * 180 / Math.PI).toFixed(1) + '\u00b0';
+        document.getElementById('rollVal').textContent = (roll * 180 / Math.PI).toFixed(1) + '\u00b0';
+    });
+
+    // Face — draw preview + overlay
+    vc.on('face', ({ detected, box, keypoints, videoWidth, videoHeight }) => {
+        // Resize canvases to match video dimensions
+        if (previewCanvas.width !== videoWidth || previewCanvas.height !== videoHeight) {
+            previewCanvas.width = videoWidth;
+            previewCanvas.height = videoHeight;
+            overlayCanvas.width = videoWidth;
+            overlayCanvas.height = videoHeight;
+            // Set aspect ratio on container
+            const container = document.getElementById('video-frame');
+            if (container) {
+                const isPortrait = window.innerHeight > window.innerWidth;
+                container.style.aspectRatio = isPortrait ? '1 / 1' : videoWidth + ' / ' + videoHeight;
+            }
+        }
+
+        // Draw video frame to preview canvas
+        previewCtx.drawImage(videoEl, 0, 0, previewCanvas.width, previewCanvas.height);
+
+        // Clear overlay
+        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+        if (detected && box) {
+            overlayCtx.strokeStyle = 'rgba(201,100,66,0.75)';
+            overlayCtx.lineWidth = 2;
+            overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
+        }
+
+        // FPS counter
+        frameCount++;
+        const now = performance.now();
+        if (now - lastFpsTime > 1000) {
+            const fps = Math.round((frameCount - lastFrameCount) / ((now - lastFpsTime) / 1000));
+            document.getElementById('fpsVal').textContent = fps;
+            lastFrameCount = frameCount;
+            lastFpsTime = now;
+        }
+    });
+
+    // Start
+    adapter.start();
+    isRunning = true;
+    startBtn.textContent = 'Running';
+    startBtn.disabled = true;
+
+    // Start per-frame UI update loop for Kalman predict
+    requestAnimationFrame(uiTick);
+}
+
+startBtn.addEventListener('click', init);
+</script>
+</body>
+</html>
