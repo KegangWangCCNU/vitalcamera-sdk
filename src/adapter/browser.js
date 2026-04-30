@@ -191,6 +191,12 @@ export default class BrowserAdapter {
 
         /** @private frame counter for sub-sampling emotion/gaze */
         this._frameCount = 0;
+
+        /** @private time-based throttle for emotion/gaze workers */
+        this._lastEmotionTime = 0;
+        this._lastGazeTime = 0;
+        this._emotionInterval = 500;  // ms — match original FacePhys
+        this._gazeInterval = 200;     // ms
     }
 
     // ──────────────────────────── Public API ────────────────────────────
@@ -445,8 +451,9 @@ export default class BrowserAdapter {
             }
 
             payload[key + 'Canvas'] = offscreen;
-            payload[key + 'Width']  = canvas.width;
-            payload[key + 'Height'] = canvas.height;
+            // Pass CSS dimensions (not pixel) — plot worker applies dpr via scale()
+            payload[key + 'Width']  = canvas.width  / dpr;
+            payload[key + 'Height'] = canvas.height / dpr;
             transferList.push(offscreen);
         }
 
@@ -531,14 +538,17 @@ export default class BrowserAdapter {
             frameInput.faceKeypoints = keypoints;
         }
 
-        // Emotion (every 3rd frame)
-        if (this._models.emotion && this._frameCount % 3 === 0) {
+        // Emotion (time-based throttle, default 500ms)
+        const now = performance.now();
+        if (this._models.emotion && (now - this._lastEmotionTime > this._emotionInterval)) {
+            this._lastEmotionTime = now;
             const emotionBox = padBox(box, w, h, 0.15);
             frameInput.emotionInput = cropAndResize(ctx, emotionBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
         }
 
-        // Gaze (every 3rd frame, offset)
-        if (this._models.gaze && this._frameCount % 3 === 1) {
+        // Gaze (time-based throttle, default 200ms)
+        if (this._models.gaze && (now - this._lastGazeTime > this._gazeInterval)) {
+            this._lastGazeTime = now;
             const gazeBox = padBox(box, w, h, 0.2);
             frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');
         }
@@ -572,3 +582,4 @@ export default class BrowserAdapter {
         return { box, keypoints };
     }
 }
+    
