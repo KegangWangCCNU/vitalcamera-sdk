@@ -149,7 +149,9 @@ export default class BrowserAdapter {
      *        Optional plot canvases: { bvp, psd, trend }.
      * @param {Function} [config.faceDetector]
      *        Custom face detector: (sourceElement) => Promise<{box, keypoints}|null>.
-     *        If omitted, BlazeFace is loaded from CDN.
+     *        If omitted, MediaPipe FaceDetector (BlazeFace short-range) is
+     *        loaded from CDN and reads `blaze_face_short_range.tflite` from
+     *        `modelBasePath` (or from `models.faceDetector` if provided).
      * @param {boolean} [config.manageCamera=true]
      *        When true (default) and videoElement is provided, adapter opens
      *        the camera and sets video.srcObject. Set to false if you manage
@@ -179,7 +181,7 @@ export default class BrowserAdapter {
         this._scratch = null;
         this._scratchCtx = null;
 
-        /** @private BlazeFace detector instance */
+        /** @private MediaPipe FaceDetector instance (BlazeFace short-range) */
         this._detector = null;
 
         /** @private RAF handle */
@@ -426,18 +428,45 @@ export default class BrowserAdapter {
     }
 
     /**
-     * Load BlazeFace from CDN, with model weights from our bundled models/blazeface/.
+     * Load MediaPipe FaceDetector (BlazeFace short-range) from CDN.
+     * Tries GPU delegate first and falls back to CPU on failure.
+     * The .tflite model is fetched from {@link _modelBasePath} +
+     * `blaze_face_short_range.tflite` unless overridden via
+     * `models.faceDetector` (ArrayBuffer / Uint8Array).
      * @private
      */
     async _loadBlazeFace() {
-        const [tf, blazeface] = await Promise.all([
-            import('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core'),
-            import('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface'),
-        ]);
-        await import('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl');
-        await tf.ready();
-        const modelUrl = this._modelBasePath + 'blazeface/model.json';
-        this._detector = await blazeface.load({ maxFaces: 1, modelUrl });
+        const { FaceDetector, FilesetResolver } = await import(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm'
+        );
+        const vision = await FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
+        );
+
+        // Allow callers to provide the model as a buffer; otherwise fetch by URL.
+        const baseOptions = {};
+        const buf = this._models && this._models.faceDetector;
+        if (buf) {
+            baseOptions.modelAssetBuffer =
+                buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+        } else {
+            baseOptions.modelAssetPath =
+                this._modelBasePath + 'blaze_face_short_range.tflite';
+        }
+
+        try {
+            this._detector = await FaceDetector.createFromOptions(vision, {
+                baseOptions: { ...baseOptions, delegate: 'GPU' },
+                runningMode: 'VIDEO',
+            });
+        } catch (err) {
+            this._detector = await FaceDetector.createFromOptions(vision, {
+                baseOptions: { ...baseOptions, delegate: 'CPU' },
+                runningMode: 'VIDEO',
+            });
+            // eslint-disable-next-line no-console
+            console.log('FaceDetector GPU delegate not available, using CPU.');
+        }
     }
 
     /**
@@ -623,7 +652,16 @@ export default class BrowserAdapter {
     }
 
     /**
-     * Run face detection using BlazeFace or custom detector.
+     * Run face detection using MediaPipe FaceDetector or a custom detector.
+     *
+     * Returns box in pixel coordinates and keypoints converted from
+     * MediaPipe's normalized [0, 1] space into pixel coordinates so the
+     * `'face'` event payload stays drawable on the source canvas.
+     *
+     * MediaPipe BlazeFace short-range keypoint order:
+     *   0 = right_eye, 1 = left_eye, 2 = nose_tip,
+     *   3 = mouth, 4 = right_ear, 5 = left_ear
+     *
      * @private
      */
     async _detectFace(source) {
@@ -633,14 +671,29 @@ export default class BrowserAdapter {
 
         if (!this._detector) return null;
 
-        const predictions = await this._detector.estimateFaces(source, false);
-        if (!predictions || predictions.length === 0) return null;
+        // MediaPipe FaceDetector.detectForVideo is synchronous and requires a
+        // monotonically increasing timestamp in milliseconds.
+        const result = this._detector.detectForVideo(source, performance.now());
+        if (!result || !result.detections || result.detections.length === 0) {
+            return null;
+        }
 
-        const pred = predictions[0];
-        const [x1, y1] = pred.topLeft;
-        const [x2, y2] = pred.bottomRight;
-        const box = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
-        const keypoints = (pred.landmarks || []).map(([x, y]) => ({ x, y }));
+        const det = result.detections[0];
+        const bb = det.boundingBox;
+        const box = {
+            x: bb.originX,
+            y: bb.originY,
+            w: bb.width,
+            h: bb.height,
+        };
+
+        // Keypoints from tasks-vision are normalized [0, 1]; convert to pixels.
+        const sw = source.width || source.videoWidth || 1;
+        const sh = source.height || source.videoHeight || 1;
+        const keypoints = (det.keypoints || []).map(({ x, y }) => ({
+            x: x * sw,
+            y: y * sh,
+        }));
 
         return { box, keypoints };
     }
@@ -658,13 +711,14 @@ export default class BrowserAdapter {
 
     /** Default model filenames — maps internal keys to default filenames. */
     static MODEL_FILES = {
-        rppg:     'model.tflite',
-        rppgProj: 'proj.tflite',
-        sqi:      'sqi_model.tflite',
-        psd:      'psd_model.tflite',
-        state:    'state.gz',
-        emotion:  'enet_b0_8_best_vgaf_dynamic_int8.tflite',
-        gaze:     'mobileone_s0_gaze_float16.tflite',
+        rppg:         'model.tflite',
+        rppgProj:     'proj.tflite',
+        sqi:          'sqi_model.tflite',
+        psd:          'psd_model.tflite',
+        state:        'state.gz',
+        emotion:      'enet_b0_8_best_vgaf_dynamic_int8.tflite',
+        gaze:         'mobileone_s0_gaze_float16.tflite',
+        faceDetector: 'blaze_face_short_range.tflite',
     };
 
     /**
