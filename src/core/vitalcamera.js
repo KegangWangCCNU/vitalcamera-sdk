@@ -277,18 +277,21 @@ class VitalCamera {
 
         if (type !== 'result') return;
 
+        // Workers send { type: 'result', payload: { ... } } — unwrap payload
+        const payload = data.payload || data;
+
         switch (workerName) {
             case 'inference':
-                this._onInferenceResult(data);
+                this._onInferenceResult(payload);
                 break;
             case 'psd':
-                this._onPsdResult(data);
+                this._onPsdResult(payload);
                 break;
             case 'emotion':
-                this._onEmotionResult(data);
+                this._onEmotionResult(payload);
                 break;
             case 'gaze':
-                this._onGazeResult(data);
+                this._onGazeResult(payload);
                 break;
         }
     }
