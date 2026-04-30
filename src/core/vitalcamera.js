@@ -166,6 +166,7 @@ class VitalCamera {
         // BVP ring for PSD worker (450 samples)
         this._bvpRing = [];
         this._bvpRingSize = 450;
+        this._lastPsdSendTime = 0;
 
         // Latest heart rate for peak validation
         this._lastHR = null;
@@ -415,20 +416,22 @@ class VitalCamera {
             this._bvpRing.shift();
         }
 
-        // Send PSD every frame — right-align with zero-fill when not yet full
-        // (matches original FacePhys behavior: inference starts immediately)
-        const ordered = new Float32Array(this._bvpRingSize);
-        const len = this._bvpRing.length;
-        if (len < this._bvpRingSize) {
-            // Zero-fill on the left, data on the right
-            ordered.set(this._bvpRing, this._bvpRingSize - len);
-        } else {
-            ordered.set(this._bvpRing);
+        // Throttle PSD to once every 500ms to save compute
+        const now = performance.now();
+        if (now - this._lastPsdSendTime >= 500) {
+            this._lastPsdSendTime = now;
+            const ordered = new Float32Array(this._bvpRingSize);
+            const len = this._bvpRing.length;
+            if (len < this._bvpRingSize) {
+                ordered.set(this._bvpRing, this._bvpRingSize - len);
+            } else {
+                ordered.set(this._bvpRing);
+            }
+            this._postIfReady('psd', {
+                type: 'run',
+                payload: { inputData: ordered },
+            });
         }
-        this._postIfReady('psd', {
-            type: 'run',
-            payload: { inputData: ordered },
-        });
 
         // Accumulate BVP samples for HRV
         if (this.config.enableHrv) {
