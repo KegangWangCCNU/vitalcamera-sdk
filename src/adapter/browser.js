@@ -426,7 +426,7 @@ export default class BrowserAdapter {
     }
 
     /**
-     * Load BlazeFace from CDN.
+     * Load BlazeFace from CDN, with model weights from our bundled models/blazeface/.
      * @private
      */
     async _loadBlazeFace() {
@@ -436,7 +436,8 @@ export default class BrowserAdapter {
         ]);
         await import('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl');
         await tf.ready();
-        this._detector = await blazeface.load({ maxFaces: 1 });
+        const modelUrl = this._modelBasePath + 'blazeface/model.json';
+        this._detector = await blazeface.load({ maxFaces: 1, modelUrl });
     }
 
     /**
