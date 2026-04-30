@@ -117,6 +117,12 @@ class VitalCamera {
 
         // Latest heart rate for peak validation
         this._lastHR = null;
+
+        // Smoothed frame dt (updated each processFrame call)
+        this._dval = 1 / 30;
+
+        // Decompressed state JSON for inference worker warm-start
+        this._stateJson = null;
     }
 
     // -----------------------------------------------------------------------
@@ -128,6 +134,17 @@ class VitalCamera {
      * @returns {Promise<void>}
      */
     async init() {
+        // Decompress gzip state for inference warm-start (if provided)
+        if (this.models.state && !this._stateJson) {
+            try {
+                const ds = new DecompressionStream('gzip');
+                const reader = new Blob([this.models.state]).stream().pipeThrough(ds);
+                this._stateJson = await new Response(reader).json();
+            } catch (_) {
+                this._stateJson = {};
+            }
+        }
+
         const basePath = this.config.workerBasePath;  // null = auto Blob URL
         const workerNames = ['inference', 'psd'];
         if (this.config.enableEmotion && this.models.emotion) {
@@ -219,6 +236,9 @@ class VitalCamera {
 
         const { rppgInput, dtVal, timestamp, emotionInput, gazeInput, faceKeypoints } = frame;
 
+        // Track smoothed dt for HR formula correction
+        if (dtVal > 0) this._dval = dtVal;
+
         // Dispatch to rPPG inference worker
         this._postIfReady('inference', {
             type: 'run',
@@ -275,6 +295,11 @@ class VitalCamera {
             return;
         }
 
+        if (type === 'state_exported') {
+            this.emit('state_exported', data.payload);
+            return;
+        }
+
         if (type !== 'result') return;
 
         // Workers send { type: 'result', payload: { ... } } — unwrap payload
@@ -302,11 +327,11 @@ class VitalCamera {
      * @private
      */
     _onInferenceResult(data) {
-        const { value, timestamp } = data;
+        const { value, timestamp, time } = data;
         if (value == null) return;
 
-        // Emit raw BVP
-        this.emit('bvp', { value, timestamp });
+        // Emit raw BVP (including inference time for latency display)
+        this.emit('bvp', { value, timestamp, time });
 
         // Peak detection → beat events
         const beat = this._peakDetector.process(timestamp, value, this._lastHR);
@@ -340,15 +365,18 @@ class VitalCamera {
      * @private
      */
     _onPsdResult(data) {
-        const { sqi, hr } = data;
+        const { sqi, hr, psd, freq, peak } = data;
         if (hr == null) return;
 
-        this._lastHR = hr;
+        // Correct HR for actual framerate (matching original FacePhys formula)
+        const correctedHr = hr / 30.0 / this._dval;
+        this._lastHR = correctedHr;
 
         const sqiVal = sqi != null ? sqi : 0;
         this.emit('heartrate', {
-            hr,
+            hr: correctedHr,
             sqi: sqiVal,
+            psd, freq, peak,
             timestamp: Date.now(),
         });
     }
@@ -454,6 +482,7 @@ class VitalCamera {
                     payload: {
                         modelBuffer: this.models.rppg,
                         projBuffer: this.models.rppgProj,
+                        stateJson: this._stateJson || {},
                     },
                 });
                 break;

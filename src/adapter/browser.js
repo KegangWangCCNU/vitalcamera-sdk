@@ -197,6 +197,17 @@ export default class BrowserAdapter {
         this._lastGazeTime = 0;
         this._emotionInterval = 500;  // ms — match original FacePhys
         this._gazeInterval = 200;     // ms
+
+        /** @private 30fps frame throttle (matching original FacePhys) */
+        this._frameInterval = 1000 / 30;
+
+        /** @private smoothed dt for rPPG model (exponential moving average) */
+        this._dval = 1 / 30;
+        this._lastCaptureTime = 0;
+        this._virtualTime = 0;
+
+        /** @private trend update throttle (1 update/sec like original) */
+        this._lastTrendUpdateTime = 0;
     }
 
     // ──────────────────────────── Public API ────────────────────────────
@@ -302,10 +313,19 @@ export default class BrowserAdapter {
      * @param {number} [timestamp=performance.now()] Frame timestamp in ms.
      */
     processVideoFrame(source, timestamp) {
-        const now = timestamp ?? performance.now();
-        const dt = this._lastFrameTime > 0 ? (now - this._lastFrameTime) / 1000 : 1 / 30;
-        this._lastFrameTime = now;
+        const captureTime = timestamp ?? Date.now();
         this._frameCount++;
+
+        // Smooth dt with exponential moving average (matching original FacePhys)
+        if (this._lastCaptureTime > 0) {
+            const rawDt = (captureTime - this._lastCaptureTime) / 1000;
+            this._dval = this._dval * 0.997 + 0.003 * rawDt;
+            this._virtualTime += this._dval * 1000;
+            this._virtualTime = this._virtualTime * 0.997 + 0.003 * captureTime;
+        } else {
+            this._virtualTime = captureTime;
+        }
+        this._lastCaptureTime = captureTime;
 
         // Determine source dimensions
         const sw = source.videoWidth || source.width || 640;
@@ -320,7 +340,7 @@ export default class BrowserAdapter {
         ctx.drawImage(source, 0, 0, sw, sh);
 
         // Face detection + processing (async, fire-and-forget)
-        this._processDetection(ctx, sw, sh, dt, now);
+        this._processDetection(ctx, sw, sh, this._dval, this._virtualTime);
     }
 
     /**
@@ -464,6 +484,10 @@ export default class BrowserAdapter {
                 this._plotWorker?.postMessage({ type: 'bvp_data', payload: data.value });
             });
             this._vs.on('heartrate', (data) => {
+                // Throttle trend updates to 1/second (matching original)
+                const now = Date.now();
+                if (now - this._lastTrendUpdateTime < 1000) return;
+                this._lastTrendUpdateTime = now;
                 this._plotWorker?.postMessage({
                     type: 'trend_data',
                     payload: { hr: data.hr, valid: data.sqi > 0.5 },
@@ -479,6 +503,12 @@ export default class BrowserAdapter {
     _tick() {
         if (!this._running) return;
         this._rafId = requestAnimationFrame(() => this._tick());
+
+        // Throttle to 30fps (matching original FacePhys)
+        const now = performance.now();
+        const elapsed = now - (this._lastTickTime || 0);
+        if (elapsed < this._frameInterval) return;
+        this._lastTickTime = now - (elapsed % this._frameInterval);
 
         const video = this._video;
         if (!video || video.readyState < 2) return;
