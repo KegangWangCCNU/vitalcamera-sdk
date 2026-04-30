@@ -229,16 +229,14 @@
             <div id="btn-about" class="nav-btn"><i class="fa-solid fa-circle-question"></i><span>About</span></div>
             <div id="about-menu">
                 <div class="menu-content" style="width:320px;max-width:90vw">
-                    <div class="menu-title">FacePhys Demo V1.0</div>
+                    <div class="menu-title">Vital Camera Demo</div>
                     <p style="line-height:1.6;margin-bottom:8px;font-size:13px;color:var(--text-secondary)">
-                        FacePhys leverages State Space Models (SSMs) to model heart dynamics as continuous-time controlled ODEs.
-                        This ensures robust handling of irregular sampling and precise capture of physiological signals.
+                        A live demonstration of the <strong>vitalcamera-sdk</strong> — a browser-based SDK for real-time heart rate, HRV, emotion, gaze, and head pose estimation from a standard webcam.
                     </p>
                     <p style="line-height:1.6;margin-bottom:8px;font-size:13px;color:var(--text-secondary)">
-                        Optimized for the edge inference, the model is ultra-lightweight (4MB) with latency as low as 5ms.
+                        This demo showcases the full SDK capability with zero backend dependency. All inference runs locally in your browser via LiteRT.
                     </p>
                     <p style="line-height:1.6;font-size:13px;color:var(--text-secondary)">
-                        Powered by LiteRT, inference runs in your browser.
                         <strong>Privacy is guaranteed with zero data upload.</strong>
                     </p>
                     <div style="border-top:0.5px solid var(--border);margin:12px 0"></div>
@@ -246,9 +244,8 @@
                 </div>
             </div>
         </div>
-        <a href="https://github.com/KegangWangCCNU/FacePhys-Release" target="_blank" class="nav-btn"><i class="fa-brands fa-github"></i><span>GitHub</span></a>
-        <a href="https://github.com/user-attachments/files/24302692/FacePhys2025.pdf" target="_blank" class="nav-btn"><i class="fa-solid fa-file-lines"></i><span>Paper</span></a>
-        <a href="https://github.com/KegangWangCCNU/open-rppg" target="_blank" class="nav-btn"><i class="fa-brands fa-python"></i><span>Python SDK</span></a>
+        <a href="https://github.com/KegangWangCCNU/vitalcamera-sdk" target="_blank" class="nav-btn"><i class="fa-brands fa-github"></i><span>GitHub</span></a>
+        <a href="https://www.npmjs.com/package/vitalcamera-sdk" target="_blank" class="nav-btn"><i class="fa-solid fa-globe"></i><span>Web SDK</span></a>
     </div>
     <a href="https://ai.google.dev/edge" target="_blank" class="litert-brand">
         <span class="litert-text">Powered by</span>
@@ -260,7 +257,10 @@
 
 <div id="monitor-window">
     <div class="title-bar">
-        <span class="app-title"><span class="accent">Vital</span> Camera</span>
+        <span style="display:flex;align-items:baseline;gap:16px">
+            <a href="https://github.com/KegangWangCCNU/vitalcamera-sdk" target="_blank" class="app-title" style="text-decoration:none;color:inherit;cursor:pointer"><span class="accent">Vital</span> Camera</a>
+            <span style="font-size:14px;color:var(--text-tertiary);font-style:italic;font-family:'Times New Roman',Georgia,serif;letter-spacing:0.3px">for everyone's wellbeing</span>
+        </span>
     </div>
     <div id="main-content">
         <div id="data-col">
@@ -351,7 +351,7 @@
 
 <script type="module">
 // ─── Imports ───
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.12/src/index.js';
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.14/src/index.js';
 import { FaceDetector, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm';
 
 
@@ -547,6 +547,7 @@ async function init() {
         videoElement: videoEl,
         faceDetector: customDetector,
         canvases: { bvp: plotCanvas, trend: trendCanvas },
+        vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
     });
 
     await adapter.init();
@@ -556,7 +557,7 @@ async function init() {
     vc.on('heartrate', ({ hr, sqi }) => {
         hrLog.push([Date.now(), hr, sqi]);
         elSqi.textContent = sqi.toFixed(2);
-        if (sqi > 0.4) { elHr.textContent = hr.toFixed(1); elHr.classList.add('active'); }
+        if (sqi > 0.38) { elHr.textContent = hr.toFixed(1); elHr.classList.add('active'); }
         else { elHr.textContent = '-'; elHr.classList.remove('active'); }
     });
 
@@ -680,4 +681,5 @@ document.addEventListener('visibilitychange', () => {
         aboutBtn.classList.remove('pressed');
     });
 </script>
-</bo
+</body>
+</html>
