@@ -25,6 +25,7 @@
 import VitalCamera from '../core/vitalcamera.js';
 import { estimateHeadPose } from '../core/headpose.js';
 import { createWorker } from '../workers/loader.js';
+import KalmanFilter1D from '../utils/kalman.js';
 
 /* ── ImageNet normalization constants ── */
 const IMAGENET_MEAN = [0.485, 0.456, 0.406];
@@ -198,6 +199,12 @@ export default class BrowserAdapter {
         this._lastGazeTime = 0;
         this._emotionInterval = 500;  // ms — match original FacePhys
         this._gazeInterval = 200;     // ms
+
+        /** @private Kalman filters for face bounding box (x, y, w, h) */
+        this._kfBoxX = null;
+        this._kfBoxY = null;
+        this._kfBoxW = null;
+        this._kfBoxH = null;
 
         /** @private 30fps frame throttle (matching original FacePhys) */
         this._frameInterval = 1000 / 30;
@@ -536,6 +543,8 @@ export default class BrowserAdapter {
 
         if (!detection) {
             // No face — still emit so UI can hide overlay
+            this._kfBoxX = null; this._kfBoxY = null;
+            this._kfBoxW = null; this._kfBoxH = null;
             this._vs?.emit('face', {
                 detected: false,
                 box: null,
@@ -547,7 +556,24 @@ export default class BrowserAdapter {
             return;
         }
 
-        const { box, keypoints } = detection;
+        const { box: rawBox, keypoints } = detection;
+
+        // ── Kalman-filter the face bounding box (matches FacePhys behaviour) ──
+        let box;
+        if (!this._kfBoxX) {
+            this._kfBoxX = new KalmanFilter1D(rawBox.x);
+            this._kfBoxY = new KalmanFilter1D(rawBox.y);
+            this._kfBoxW = new KalmanFilter1D(rawBox.w);
+            this._kfBoxH = new KalmanFilter1D(rawBox.h);
+            box = { ...rawBox };
+        } else {
+            box = {
+                x: this._kfBoxX.update(rawBox.x),
+                y: this._kfBoxY.update(rawBox.y),
+                w: this._kfBoxW.update(rawBox.w),
+                h: this._kfBoxH.update(rawBox.h),
+            };
+        }
 
         // ── Emit face event so user can render their own overlay ──
         this._vs?.emit('face', {
