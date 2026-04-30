@@ -148,12 +148,6 @@ Models are **not included** in the npm package. You need to provide them as `Arr
 | emotion | `enet_b0_8_*.tflite` | Emotion classification (optional) |
 | gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional) |
 
-## Tests
-
-```bash
-npm test   # 94 tests across 5 files
-```
-
 ## Citations
 
 If you use this SDK in your research, please cite the relevant papers:
