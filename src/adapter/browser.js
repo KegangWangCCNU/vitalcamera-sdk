@@ -496,7 +496,7 @@ export default class BrowserAdapter {
                 this._lastTrendUpdateTime = now;
                 this._plotWorker?.postMessage({
                     type: 'trend_data',
-                    payload: { hr: data.hr, valid: data.sqi > 0.5 },
+                    payload: { hr: data.hr, valid: data.sqi > 0.4 },
                 });
             });
         }
