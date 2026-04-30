@@ -132,7 +132,7 @@ self.onmessage = (e) => {
 function drawBVP() {
     if (!bvpCtx) return;
 
-    bvpCtx.fillStyle = "#f5f0e8";
+    bvpCtx.fillStyle = "#eee9e0";
     bvpCtx.fillRect(0, 0, bvpWidth, bvpHeight);
 
     bvpCtx.beginPath();
@@ -194,7 +194,7 @@ function drawBVP() {
     }
     bvpCtx.stroke();
 
-    bvpCtx.fillStyle = "#f5f0e8";
+    bvpCtx.fillStyle = "#eee9e0";
     if (gapEnd <= bvpWidth) {
         bvpCtx.fillRect(gapStart, 0, SCAN_GAP, bvpHeight);
     } else {
@@ -219,7 +219,7 @@ function drawBVP() {
 function drawPSD(psdData, freqData, peakIdx) {
     if (!psdCtx) return;
 
-    psdCtx.fillStyle = "#ffffff";
+    psdCtx.fillStyle = "#eee9e0";
     psdCtx.fillRect(0, 0, psdWidth, psdHeight);
 
     psdCtx.strokeStyle = "rgba(0,0,0,0.08)";
@@ -315,51 +315,46 @@ function drawTrend() {
 
     trendCtx.imageSmoothingEnabled = false;
 
-    trendCtx.fillStyle = "#000000";
+    trendCtx.fillStyle = "#eee9e0";
     trendCtx.fillRect(0, 0, trendWidth, trendHeight);
 
-    const padding = 20;
-    const paddingBottom = 20;
-    const graphW = trendWidth;
+    const padding = 6;
+    const paddingBottom = 16;
+    const paddingLeft = 4;
+    const paddingRight = 16;
+    const graphW = trendWidth - paddingLeft - paddingRight;
     const graphH = trendHeight - padding - paddingBottom;
 
-    trendCtx.lineWidth = 1;
-    trendCtx.strokeStyle = "#004000";
-
+    // Horizontal grid lines only (subtle)
+    trendCtx.lineWidth = 0.5;
+    trendCtx.strokeStyle = "rgba(0,0,0,0.06)";
     const ySteps = [60, 100, 140];
     trendCtx.beginPath();
     for (let val of ySteps) {
         const norm = (val - TREND_Y_MIN) / (TREND_Y_MAX - TREND_Y_MIN);
         const y = Math.floor(trendHeight - paddingBottom - (norm * graphH)) + 0.5;
-        trendCtx.moveTo(0, y);
-        trendCtx.lineTo(trendWidth, y);
-    }
-
-    const stepX = graphW / (TREND_MAX_POINTS - 1);
-    for (let i = 0; i < TREND_MAX_POINTS; i += 60) {
-        const x = Math.floor(i * stepX) + 0.5;
-        trendCtx.moveTo(x, padding);
-        trendCtx.lineTo(x, trendHeight - paddingBottom);
+        trendCtx.moveTo(paddingLeft, y);
+        trendCtx.lineTo(trendWidth - paddingRight, y);
     }
     trendCtx.stroke();
 
-    trendCtx.font = "10px monospace";
-    trendCtx.fillStyle = "#00FF00";
+    // X-axis: fixed 0 to 5 min (TREND_MAX_POINTS = 300s)
+    const stepX = graphW / (TREND_MAX_POINTS - 1);
+    trendCtx.font = "10px -apple-system, sans-serif";
+    trendCtx.fillStyle = "#b5b0a8";
     trendCtx.textAlign = "center";
     trendCtx.textBaseline = "top";
 
-    for (let i = 0; i <= TREND_MAX_POINTS; i += 60) {
-        const x = Math.floor(i * stepX);
-        const timeLabel = (i - TREND_MAX_POINTS) + "s";
-        if (i === TREND_MAX_POINTS) {
-            trendCtx.fillText("0s", x - 10, trendHeight - paddingBottom + 4);
-        } else {
-            trendCtx.fillText(timeLabel, x, trendHeight - paddingBottom + 4);
-        }
+    // Labels every 60s: 0, 1min, 2min, 3min, 4min, 5min
+    for (let sec = 0; sec <= TREND_MAX_POINTS; sec += 60) {
+        const x = paddingLeft + sec * stepX;
+        const label = sec === 0 ? "0" : (sec / 60) + "min";
+        trendCtx.fillText(label, x, trendHeight - paddingBottom + 3);
     }
 
     if (trendBuffer.length < 2) return;
 
+    // Draw the line — data fills left to right on fixed x scale
     trendCtx.lineWidth = 2;
     trendCtx.lineJoin = "round";
 
@@ -367,8 +362,8 @@ function drawTrend() {
         const p1 = trendBuffer[i - 1];
         const p2 = trendBuffer[i];
 
-        const x1 = Math.floor((i - 1) * stepX) + 0.5;
-        const x2 = Math.floor(i * stepX) + 0.5;
+        const x1 = Math.floor(paddingLeft + (i - 1) * stepX) + 0.5;
+        const x2 = Math.floor(paddingLeft + i * stepX) + 0.5;
 
         let y1 = trendHeight - paddingBottom - ((p1.hr - TREND_Y_MIN) / (TREND_Y_MAX - TREND_Y_MIN) * graphH);
         let y2 = trendHeight - paddingBottom - ((p2.hr - TREND_Y_MIN) / (TREND_Y_MAX - TREND_Y_MIN) * graphH);
@@ -381,11 +376,11 @@ function drawTrend() {
         if (p2.valid && p1.valid) {
             trendCtx.setLineDash([]);
             trendCtx.lineCap = "round";
-            trendCtx.strokeStyle = "#00FF00";
+            trendCtx.strokeStyle = "#c96442";
         } else {
-            trendCtx.setLineDash([9, 9]);
+            trendCtx.setLineDash([6, 4]);
             trendCtx.lineCap = "butt";
-            trendCtx.strokeStyle = "#a0a0a0ff";
+            trendCtx.strokeStyle = "#d0cbc2";
         }
 
         trendCtx.moveTo(x1, y1);
