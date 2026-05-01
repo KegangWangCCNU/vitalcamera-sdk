@@ -51,16 +51,24 @@ const EYE_H        = 24;   // OCEC input height (matches model)
 const EYE_BOX_WFRAC_IOD = 0.55;
 
 /**
- * Per-frame motion gate for eye-state. Computed as max(|dKpL|, |dKpR|) / iod,
- * i.e. the larger eye-keypoint displacement between consecutive frames as a
- * fraction of the inter-eye distance. When this exceeds the threshold the head
- * is moving too fast — the crop will be motion-blurred / misaligned, so we hold
- * the previous eye state to avoid spurious "blink" detections during head turns.
+ * Per-frame motion gate for eye-state. Computed as max(|dKpL|, |dKpR|) / iod —
+ * the larger eye-keypoint displacement between consecutive frames as a fraction
+ * of the inter-eye distance. When this exceeds the threshold the head is moving
+ * too fast for the crop to be reliable.
  *
- * 0.10 lets normal talking-head movement through (~3–5%/frame) and suppresses
- * brisk turns (≥10°/frame ≈ 10–15%/frame).
+ * Behaviour when triggered: skip the OCEC inference and synthesise a "neutral"
+ * eyestate with prob = EYE_MOTION_NEUTRAL_PROB. The two existing eye-state
+ * thresholds make this convenient — 0.6 sits between them:
+ *   - eyeStateThreshold      = 0.5  → 0.6 ≥ 0.5 → "open" (display + CSV)
+ *                                     so no spurious blink appears on screen
+ *   - gazeEyeOpenGateProb    = 0.7  → 0.6 < 0.7 → gaze stays gated off
+ *                                     so gaze isn't updated with stale data
+ *
+ * 0.10 lets normal talking-head movement through (~3-5%/frame) and triggers
+ * on brisk turns (≥10°/frame ≈ 10-15%/frame).
  */
 const EYE_MOTION_GATE = 0.10;
+const EYE_MOTION_NEUTRAL_PROB = 0.6;
 
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
@@ -710,8 +718,8 @@ export default class BrowserAdapter {
             const dx = keypoints[0].x - keypoints[1].x;
             const dy = keypoints[0].y - keypoints[1].y;
             const iod = Math.hypot(dx, dy);
-            // Motion gate — skip the inference (and let _lastEyeState hold) when
-            // the head is moving too fast for the crop to be reliable.
+            // Motion gate — when head moves too fast, skip inference and
+            // synthesise a neutral 0.6 prob (open for display, blocks gaze).
             let motionFrac = 0;
             if (this._lastEyeKpL && this._lastEyeKpR) {
                 const dL = Math.hypot(keypoints[1].x - this._lastEyeKpL.x, keypoints[1].y - this._lastEyeKpL.y);
@@ -722,7 +730,14 @@ export default class BrowserAdapter {
             this._lastEyeKpL = { x: keypoints[1].x, y: keypoints[1].y };
             this._lastEyeKpR = { x: keypoints[0].x, y: keypoints[0].y };
 
-            if (iod > 4 && motionFrac < EYE_MOTION_GATE) {
+            if (iod > 4 && motionFrac >= EYE_MOTION_GATE) {
+                // Head moving fast — bypass the worker, push a neutral state directly.
+                this._vs?._onEyeStateResult({
+                    leftProb: EYE_MOTION_NEUTRAL_PROB,
+                    rightProb: EYE_MOTION_NEUTRAL_PROB,
+                    time: 0,
+                });
+            } else if (iod > 4) {
                 const rawR = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
                 const rawL = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
                 // Kalman-filter both eye boxes — same defaults as the face box for visual consistency
