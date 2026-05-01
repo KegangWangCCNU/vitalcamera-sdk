@@ -39,12 +39,16 @@ const EYE_W        = 40;   // OCEC input width  (matches model)
 const EYE_H        = 24;   // OCEC input height (matches model)
 
 /**
- * Eye crop width as a fraction of face bounding-box width. The OCEC author
- * reports real-world eye widths of ~15-22 px on a typical face — for a face
- * of width W, an eye box of 0.30 * W gives a generous margin around the
- * eye while staying well within model tolerance.
+ * Eye crop width as a fraction of the inter-eye distance (right_eye -> left_eye).
+ *
+ * Why inter-eye distance and not face-bbox width: the BlazeFace face box can be
+ * loose (especially with hair / fringe), making `face.w * fraction` unreliable.
+ * Inter-eye distance is anatomically tight: a human eye width is roughly
+ * 0.45 * inter-eye-distance, so 0.50 leaves a small margin while keeping the
+ * eye filling most of the 40x24 OCEC input — which is what the model was
+ * trained on (tight eye crops from a wholebody detector).
  */
-const EYE_BOX_WFRAC = 0.30;
+const EYE_BOX_WFRAC_IOD = 0.50;
 
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
@@ -93,18 +97,18 @@ function cropAndResize(ctx, box, targetW, targetH, normalize = 'imagenet') {
 }
 
 /**
- * Build an axis-aligned eye crop box centered on a keypoint, sized as a
- * fraction of the face bounding-box width. The 5:3 aspect ratio matches
+ * Build an axis-aligned eye crop box centered on an eye keypoint, sized
+ * relative to the inter-eye distance (`iod`). The 5:3 aspect ratio matches
  * the OCEC model (40 wide × 24 high).
  *
  * @param {{x:number,y:number}} kp     Eye keypoint in pixel coordinates
- * @param {number} faceW               Face bounding-box width (px)
+ * @param {number} iod                 Inter-eye distance in pixels
  * @param {number} canvasW
  * @param {number} canvasH
  * @returns {{x:number,y:number,w:number,h:number}}
  */
-function eyeBoxFromKeypoint(kp, faceW, canvasW, canvasH) {
-    const w = faceW * EYE_BOX_WFRAC;
+function eyeBoxFromKeypoint(kp, iod, canvasW, canvasH) {
+    const w = iod * EYE_BOX_WFRAC_IOD;
     const h = w * (EYE_H / EYE_W);
     let x = kp.x - w / 2;
     let y = kp.y - h / 2;
@@ -676,17 +680,21 @@ export default class BrowserAdapter {
         // Eye-state (every frame — single forward pass per eye is ~0.3 ms).
         // BlazeFace short-range keypoint order:
         //   [0]=right_eye, [1]=left_eye  — names from the *subject's* perspective.
-        // We pass the boxes in canonical "left/right of subject" order; the
-        // event payload uses the same convention.
+        // We size the crop from the inter-eye distance (anatomically tight), not
+        // face.w (which can be loose around hair/fringe), so the eye fills most
+        // of the 40x24 OCEC input — matching the tight crops it was trained on.
         if (this._models.eyeState && keypoints && keypoints.length >= 2) {
-            const rightBox = eyeBoxFromKeypoint(keypoints[0], box.w, w, h);
-            const leftBox  = eyeBoxFromKeypoint(keypoints[1], box.w, w, h);
-            // Skip if either crop would be empty (e.g. eye outside frame)
-            if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
-                frameInput.eyeRightInput = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
-                frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
-                // Boxes are exposed via _lastEyeBoxes for overlay drawing
-                this._lastEyeBoxes = { left: leftBox, right: rightBox };
+            const dx = keypoints[0].x - keypoints[1].x;
+            const dy = keypoints[0].y - keypoints[1].y;
+            const iod = Math.hypot(dx, dy);
+            if (iod > 4) {
+                const rightBox = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
+                const leftBox  = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
+                if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
+                    frameInput.eyeRightInput = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
+                    frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
+                    this._lastEyeBoxes = { left: leftBox, right: rightBox };
+                }
             }
         }
 
