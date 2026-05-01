@@ -75,16 +75,14 @@ describe('VitalCamera constructor', () => {
         assert.equal(vs.config.enableGaze, true);
         assert.equal(vs.config.enableHeadPose, true);
         assert.equal(vs.config.enableHrv, true);
-        assert.equal(vs.config.hrvTargetFs, 200);
         assert.equal(vs.config.hrvMinDuration, 15);
         assert.equal(vs.config.hrvUpdateInterval, 1000);
-        assert.equal(vs.config.sqiThreshold, 0.6);
+        assert.equal(vs.config.hrvSqiThreshold, 0.6);
     });
 
     it('overrides defaults with provided config', () => {
         const vs = new VitalCamera({
             enableEmotion: false,
-            hrvTargetFs: 100,
             sqiThreshold: 0.8,
         });
         assert.equal(vs.config.enableEmotion, false);
@@ -278,21 +276,28 @@ describe('VitalCamera peak detector integration', () => {
 // ---------------------------------------------------------------------------
 describe('VitalCamera HRV pipeline', () => {
     it('computeHrvFromSamples returns valid RMSSD for a periodic signal', () => {
-        const vs = new VitalCamera({ hrvTargetFs: 200 });
+        const vs = new VitalCamera();
 
-        // Generate 20 seconds of 1.2 Hz sine at irregular ~30 Hz timestamps
+        // 30 seconds of ~1.2 Hz BVP at 30 fps with realistic beat-to-beat
+        // variability (RR drift ~ 5 % per beat). Pure sine is rejected by
+        // the CV-too-low confidence gate, so we add a slow phase wobble.
         const samples = [];
-        const freqHz = 1.2;
-        for (let i = 0; i <= 600; i++) {
-            const t = i * 33.3; // ~30 fps, total ~20 s
-            const v = Math.sin(2 * Math.PI * freqHz * t / 1000);
-            samples.push({ t, v });
+        const fs = 30, dur = 30, baseFreq = 1.2;
+        let phase = 0;
+        for (let i = 0; i <= fs * dur; i++) {
+            const t = i * (1000 / fs);
+            // Slow random walk on instantaneous period (clamped to ±5 %).
+            const f = baseFreq * (1 + 0.05 * Math.sin(t / 4000));
+            phase += 2 * Math.PI * f / fs;
+            samples.push({ t, v: Math.sin(phase) });
         }
 
         const result = vs.computeHrvFromSamples(samples);
-        assert.ok(result, 'Should produce HRV metrics for 20 s of data');
+        assert.ok(result, 'Should produce HRV metrics for 30 s of data');
         assert.ok(Number.isFinite(result.rmssd), 'RMSSD should be finite');
         assert.ok(result.rmssd >= 0, 'RMSSD should be non-negative');
+        assert.ok(typeof result.confidence === 'number', 'should expose a confidence');
+        assert.ok(result.confidence >= 0 && result.confidence <= 1);
     });
 
     it('computeHrvFromSamples returns null for too-short data', () => {

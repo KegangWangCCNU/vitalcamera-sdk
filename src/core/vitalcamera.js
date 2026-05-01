@@ -600,7 +600,12 @@ class VitalCamera {
         const hrv = this.computeHrvFromSamples(this._bvpSamples);
         if (hrv) {
             this._lastHrvTime = timestamp;
-            this.emit('hrv', { rmssd: hrv.rmssd, timestamp });
+            this.emit('hrv', {
+                rmssd: hrv.rmssd,
+                cv: hrv.cv,
+                confidence: hrv.confidence,
+                timestamp,
+            });
         }
     }
 
@@ -614,7 +619,7 @@ class VitalCamera {
     computeHrvFromSamples(samples) {
         if (!samples || samples.length < 8) return null;
 
-        // Build a flat amplitude view once (rejectAbnormalPeaks accesses by index)
+        // ── Upper peaks (primary measurement) ────────────────────────────
         const ampView = { length: samples.length };
         const negAmpView = { length: samples.length };
         for (let i = 0; i < samples.length; i++) {
@@ -622,7 +627,6 @@ class VitalCamera {
             negAmpView[i] = -samples[i].v;
         }
 
-        // ── Upper peaks (primary measurement) ────────────────────────────
         let peaks = detectBvpPeaks(samples);
         if (peaks.length < 4) return null;
         peaks = rejectAbnormalPeaks(peaks, ampView);
@@ -633,8 +637,13 @@ class VitalCamera {
             rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
         }
 
-        // ── Lower valleys (independent estimate, used only to validate) ──
-        // Same pipeline, run on the inverted signal.
+        // ── Confidence gates ─────────────────────────────────────────────
+        // Each gate checks one independent failure mode of the signal.
+
+        // Gate 1: Valley sanity — upper and lower should track the same
+        //   beats. Compare COUNTS (±2) and MEAN RR (±5%) only — pointwise
+        //   comparison is too noisy because valley parabolic fits jitter
+        //   more than peak fits (BVP descends slowly into a flat trough).
         let valleys = detectBvpValleys(samples);
         if (valleys.length >= 4) {
             valleys = rejectAbnormalPeaks(valleys, negAmpView);
@@ -645,31 +654,43 @@ class VitalCamera {
             for (let i = 1; i < valleyTimes.length; i++) {
                 rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
             }
-            // Pairwise compare RR_upper[i] vs RR_lower[i] for the prefix that
-            // both series cover. They both measure beat-to-beat in the same
-            // signal, so they should agree to within ~few percent. If the
-            // mean absolute difference exceeds 15 % of the mean upper RR the
-            // signal is too inconsistent (e.g. dicrotic notch being detected,
-            // motion artefacts) — abort this HRV update.
-            const N = Math.min(rrUpper.length, rrLower.length);
-            if (N >= 4) {
-                let sumDiff = 0, sumUpper = 0;
-                for (let i = 0; i < N; i++) {
-                    sumDiff  += Math.abs(rrUpper[i] - rrLower[i]);
-                    sumUpper += rrUpper[i];
-                }
-                const meanDiff  = sumDiff  / N;
-                const meanUpper = sumUpper / N;
-                if (meanUpper > 0 && meanDiff / meanUpper > 0.15) {
-                    return null;   // upper / lower disagree too much
-                }
-            }
+            const countDiff = Math.abs(rrUpper.length - rrLower.length);
+            const meanU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
+            const meanL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
+            if (countDiff > 2) return null;
+            if (Math.abs(meanU - meanL) / meanU > 0.05) return null;
         }
 
-        // ── Final RMSSD always uses the upper peaks (more accurate) ──────
+        // Gate 2: Filter survival rate — if the quotient / MAD filters reject
+        //   more than 40 % of RRs, the signal is too unstable for a trustworthy
+        //   RMSSD. Common during motion, expression changes, model drift.
         const rrQ = quotientFilterRR(rrUpper);
         const rrF = madFilterRR(rrQ);
-        return computeHrvMetrics(rrF);
+        if (rrF.length / rrUpper.length < 0.6) return null;
+
+        // Gate 3: Coefficient-of-variation bounds — CV (= std(RR) / mean(RR))
+        //   for healthy short-term HRV sits in 1-15 %. Outside that, either
+        //   the signal lost beats (>15 %) or is artificially smoothed (<0.5 %).
+        const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
+        let varF = 0;
+        for (const r of rrF) varF += (r - meanF) ** 2;
+        const stdF = Math.sqrt(varF / rrF.length);
+        const cv = stdF / meanF;
+        if (cv < 0.005 || cv > 0.25) return null;
+
+        // ── Final RMSSD uses the upper peaks (peak fit > valley fit) ─────
+        const m = computeHrvMetrics(rrF);
+        if (!m) return null;
+
+        // Bundle a confidence score in [0, 1] alongside RMSSD so the UI can
+        // grey out / hide low-confidence updates if it wants.  Survival rate
+        // is the dominant signal; CV proximity to the healthy range adds a
+        // small modifier.
+        const survival   = rrF.length / rrUpper.length;        // 0.6-1.0 here
+        const cvHealthy  = (cv >= 0.01 && cv <= 0.15) ? 1.0
+                         : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
+        const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
+        return { ...m, cv, confidence };
     }
 
     // -----------------------------------------------------------------------
