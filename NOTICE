@@ -11,9 +11,11 @@ This product includes models and code from the following third-party projects.
 
 ================================================================================
 
-2. MediaPipe Face Detection (BlazeFace) & Face Landmarker (Face Mesh)
+2. MediaPipe Face Detection (BlazeFace short-range)
    Used via: @mediapipe/tasks-vision
    License: Apache 2.0 (Copyright Google LLC)
+   Note: face_mesh / face_landmarker is NOT used by this SDK — only the
+   short-range face detector + its 6 keypoints (eyes, nose, ears, mouth)
 
 ================================================================================
 

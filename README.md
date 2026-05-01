@@ -10,8 +10,8 @@ Browser-based real-time physiological sensing — extract heart rate, HRV, emoti
 - **HRV** — RMSSD and other heart rate variability metrics from BVP peak detection
 - **Emotion** — 8-class facial emotion recognition (EfficientNet-B0)
 - **Gaze** — yaw/pitch eye direction estimation (MobileOne-S0)
-- **Eye State** — per-eye open/closed classification + blink (OCEC, 112 KB)
-- **Head Pose** — yaw/pitch/roll from MediaPipe face landmarks
+- **Eye State** — per-eye open/closed classification (OCEC, 2025)
+- **Head Pose** — yaw/pitch/roll from BlazeFace eye / nose / ear keypoints
 - **Pure browser** — runs entirely client-side with Web Workers and TFLite/LiteRT
 
 ## Install
@@ -154,7 +154,7 @@ Models are **included** in the npm package and git repository under `models/`. T
 | psd | `psd_model.tflite` | Power spectral density |
 | emotion | `enet_b0_8_*.tflite` | Emotion classification (optional) |
 | gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional) |
-| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional, ~112 KB) |
+| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional) |
 
 ## Citations
 
