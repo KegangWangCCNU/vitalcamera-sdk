@@ -65,7 +65,7 @@ const DEFAULTS = {
     hrvSqiThreshold: 0.6,     // only accumulate BVP samples with SQI above this
     sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
-    eyeStateThreshold: 0.5,   // p(open) >= threshold → "open"
+    eyeStateThreshold: 0.7,   // p(open) >= threshold → "open" (0.7: stricter, fewer false-open during partial closure)
 };
 
 
@@ -148,7 +148,7 @@ class VitalCamera {
      * @param {number}  [config.hrvSqiThreshold=0.6]      Min SQI to accept BVP sample for HRV
      * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
-     * @param {number}  [config.eyeStateThreshold=0.5]    p(open) >= threshold → "open"
+     * @param {number}  [config.eyeStateThreshold=0.7]    p(open) >= threshold → "open"
      */
     constructor(config = {}) {
         // Mix in EventEmitter
