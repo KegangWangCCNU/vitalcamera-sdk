@@ -35,19 +35,23 @@ Pass these inside `vitalcameraConfig`:
 ```javascript
 vitalcameraConfig: {
   // ── Feature toggles ──
-  enableEmotion: true,       // Run emotion classification
-  enableGaze: true,          // Run gaze estimation
-  enableHeadPose: true,      // Run head pose estimation
-  enableHrv: true,           // Run HRV computation
+  enableEmotion:  true,       // Run emotion classification
+  enableGaze:     true,       // Run gaze estimation
+  enableEyeState: true,       // Run OCEC per-eye open/closed
+  enableHeadPose: true,       // Run head pose estimation
+  enableHrv:      true,       // Run HRV computation (in PSD worker)
 
   // ── Thresholds ──
-  sqiThreshold: 0.38,               // Signal quality threshold for HR display
-  gazeConfidenceThreshold: 0.04,    // Min softmax peak to accept gaze (blink filter)
+  sqiThreshold:             0.38,    // SQI threshold for HR display
+  gazeConfidenceThreshold:  0.04,    // Min softmax peak to accept gaze
+  eyeStateThreshold:        0.5,     // p(open) >= threshold → "open"
+  gazeEyeOpenGateProb:      0.7,     // Skip gaze unless max(L,R) eye-prob ≥ this
+  hrvSqiThreshold:          0.6,     // Min SQI to admit a sample to the HRV buffer
 
   // ── HRV settings ──
-  hrvTargetFs: 200,          // Interpolation sample rate (Hz)
-  hrvMinDuration: 15,        // Min seconds of data before first HRV output
-  hrvUpdateInterval: 1000,   // Ms between HRV recalculations
+  hrvMinDuration:    15,      // Seconds of data before first HRV output
+  hrvMaxWindow:     120,      // Sliding window cap (seconds)
+  hrvUpdateInterval: 1000,    // Ms between HRV recalculations
 }
 ```
 
@@ -96,7 +100,34 @@ Seconds of accumulated BVP data required before the first HRV computation. Short
 
 #### `hrvUpdateInterval` (default: `1000`)
 
-Milliseconds between HRV recalculations. The HRV pipeline (interpolation → peak detection → RR filtering → RMSSD) runs on every update.
+Milliseconds between HRV recalculations. The HRV pipeline runs inside the
+PSD worker; the main thread just dispatches the current 2-minute sample
+buffer at this cadence.
+
+#### `hrvMaxWindow` (default: `120`)
+
+Sliding window cap in seconds — older BVP samples than this are evicted
+from the buffer. SDNN especially is sensitive to window length; 2 min
+matches short-term HRV literature norms.
+
+#### `hrvSqiThreshold` (default: `0.6`)
+
+Per-sample SQI gate — BVP samples whose latest SQI score is below this
+are NOT admitted into the HRV buffer. This is the only outlier filter
+at the sample level; the HRV pipeline does its own RR-interval
+filtering downstream.
+
+#### `eyeStateThreshold` (default: `0.5`)
+
+Probability cutoff for the public `open` boolean field on the
+`'eyestate'` event. Display-side decision; doesn't affect data.
+
+#### `gazeEyeOpenGateProb` (default: `0.7`)
+
+Stricter cutoff used to gate the gaze inference. When the latest
+max(L, R) eye-open probability is below this, gaze inference is
+skipped that frame — no `'gaze'` event fires, the consumer's Kalman
+filter just predicts forward without a measurement update.
 
 ---
 
@@ -106,6 +137,7 @@ Milliseconds between HRV recalculations. The HRV pipeline (interpolation → pea
 const models = await BrowserAdapter.loadModels('./models/', {
   emotion: false,
   gaze: false,
+  eyeState: false,
 });
 
 const adapter = new BrowserAdapter({
@@ -114,6 +146,7 @@ const adapter = new BrowserAdapter({
   vitalcameraConfig: {
     enableEmotion: false,
     enableGaze: false,
+    enableEyeState: false,
     enableHeadPose: false,
     enableHrv: false,
   },

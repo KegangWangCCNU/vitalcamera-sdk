@@ -100,14 +100,15 @@ Load model files from a directory.
 // Load all models
 const models = await BrowserAdapter.loadModels('./models/');
 
-// Load only heart-rate models (skip emotion & gaze)
+// Load only heart-rate models (skip emotion / gaze / eye-state)
 const models = await BrowserAdapter.loadModels('./models/', {
   emotion: false,
   gaze: false,
+  eyeState: false,
 });
 ```
 
-**Returns:** An object of ArrayBuffers keyed by model name (`rppg`, `rppgProj`, `sqi`, `psd`, `state`, `emotion`, `gaze`).
+**Returns:** An object of ArrayBuffers keyed by model name (`rppg`, `rppgProj`, `sqi`, `psd`, `state`, `emotion`, `gaze`, `eyeState`).
 
 ### Static Constants
 
@@ -169,10 +170,14 @@ vc.on('beat', ({ ibi, timestamp }) => {
 #### `'hrv'`
 
 Emitted when HRV metrics are computed (requires ≥15 seconds of clean signal).
+Computation runs inside the PSD worker (off the main thread).
 
 ```javascript
-vc.on('hrv', ({ rmssd, timestamp }) => {
-  // rmssd — number, root mean square of successive differences (ms)
+vc.on('hrv', ({ rmssd, sdnn, meanRR, n, timestamp }) => {
+  // rmssd  — number, root mean square of successive RR differences (ms)
+  // sdnn   — number, standard deviation of NN intervals (ms)
+  // meanRR — number, mean RR interval (ms; 60000/meanRR ≈ HR in BPM)
+  // n      — number, RR intervals used after filtering
 });
 ```
 
@@ -200,6 +205,28 @@ vc.on('gaze', ({ yaw, pitch, confidence, time, timestamp }) => {
   // time       — number, inference time in ms
 });
 ```
+
+#### `'eyestate'`
+
+Emitted every frame with per-eye open/closed probabilities. The OCEC model
+(112 KB) classifies each eye independently. During fast head motion the
+adapter substitutes a neutral 0.6 probability so a momentarily-blurred
+crop doesn't trigger a false blink.
+
+```javascript
+vc.on('eyestate', ({ left, right, bothClosed, time, timestamp }) => {
+  // left  — { prob: number, open: boolean }   (subject's left eye)
+  // right — { prob: number, open: boolean }   (subject's right eye)
+  // bothClosed — boolean, true when both probs < eyeStateThreshold
+  // time  — number, inference time in ms
+});
+```
+
+`open` is the boolean derived from `prob >= config.eyeStateThreshold`
+(default 0.5). The raw `prob` is also exposed because the gaze worker
+uses a stricter cutoff (`gazeEyeOpenGateProb`, default 0.7) to gate
+its own updates — when both eyes' max prob is below 0.7, the gaze
+inference is skipped that frame.
 
 #### `'headpose'`
 

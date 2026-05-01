@@ -123,6 +123,31 @@
             transition: transform 0.08s ease-out, opacity 0.08s ease-out;
         }
 
+        /* ── Eye state (open / closed) ── */
+        #eye-state-panel {
+            background: #f2eee6; border-radius: var(--radius-sm); padding: 8px 10px;
+            display: flex; align-items: center; gap: 12px;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .eye-side { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+        .eye-pill {
+            width: 36px; height: 22px; border-radius: 11px; flex-shrink: 0;
+            background: var(--surface); border: 1px solid var(--border);
+            position: relative; overflow: hidden;
+        }
+        .eye-pill::after {
+            content: ''; position: absolute; left: 50%; top: 50%;
+            width: 14px; height: 14px; border-radius: 50%;
+            transform: translate(-50%, -50%);
+            background: #c9c0b3; transition: background 0.2s, height 0.2s;
+        }
+        .eye-pill.open::after  { background: var(--accent); height: 14px; }
+        .eye-pill.closed::after { background: #6b6b6b; height: 2px; border-radius: 1px; }
+        .eye-side-label { font-size: 11px; color: var(--text-tertiary); width: 14px; }
+        .eye-side-prob { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-secondary); width: 32px; }
+        .eye-state-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0; }
+        #eyeStateTime { font-size: 12px; color: var(--text-tertiary); margin-left: auto; }
+
         /* ── Gaze & Head ── */
         #gaze-head-row { display: flex; gap: 8px; }
         #gaze-panel, #face-normal-panel {
@@ -301,6 +326,20 @@
                     </div>
                 </div>
             </div>
+            <div id="eye-state-panel">
+                <span class="eye-state-title">Eyes</span>
+                <div class="eye-side">
+                    <span class="eye-side-label">L</span>
+                    <span class="eye-pill" id="eyePillLeft"></span>
+                    <span class="eye-side-prob" id="eyeProbLeft">--</span>
+                </div>
+                <div class="eye-side">
+                    <span class="eye-side-label">R</span>
+                    <span class="eye-pill" id="eyePillRight"></span>
+                    <span class="eye-side-prob" id="eyeProbRight">--</span>
+                </div>
+                <span id="eyeStateTime">--</span>
+            </div>
             <div id="emotion-panel">
                 <div id="emotion-top">
                     <span id="emotionEmoji">--</span>
@@ -351,7 +390,7 @@
 
 <script type="module">
 // ─── Imports ───
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.5/src/index.js';
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.4.0/src/index.js';
 
 
 // ─── DOM refs ───
@@ -385,7 +424,10 @@ let currentGazeYaw = 0, currentGazePitch = 0;
 let beatTimer = null;
 
 // Data logs for SAVE
-let bvpLog = [], hrLog = [], emotionLog = [], gazeLog = [], headLog = [], hrvLog = [];
+let bvpLog = [], hrLog = [], emotionLog = [], gazeLog = [], headLog = [], hrvLog = [], eyeLog = [];
+
+// Latest eye boxes from adapter (drawn on overlay)
+let lastEyeBoxes = null;
 
 // ─── Head arrow update (from original updateFaceNormal) ───
 function updateHeadArrow(yaw, pitch, roll) {
@@ -490,10 +532,13 @@ async function handleSaveData() {
     csv = 'timestamp,hr,sqi\n'; hrLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(2)},${r[2].toFixed(4)}\n`; }); zip.file('hr.csv', csv);
     if (emotionLog.length > 0) { csv = 'timestamp,label,anger,contempt,disgust,fear,happiness,neutral,sadness,surprise\n'; emotionLog.forEach(r => { csv += `${r[0]},${r[1]},${r.slice(2).map(v=>v.toFixed(4)).join(',')}\n`; }); zip.file('emotion.csv', csv); }
     if (gazeLog.length > 0) { csv = 'timestamp,yaw,pitch\n'; gazeLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(2)},${r[2].toFixed(2)}\n`; }); zip.file('gaze.csv', csv); }
+    if (eyeLog.length > 0) { csv = 'timestamp,left_prob,right_prob,left_open,right_open\n'; eyeLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3]},${r[4]}\n`; }); zip.file('eye_state.csv', csv); }
     if (headLog.length > 0) { csv = 'timestamp,yaw,pitch,roll\n'; headLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)}\n`; }); zip.file('head_pose.csv', csv); }
     if (hrvLog.length > 0) {
-        const avg = hrvLog.reduce((s,r)=>s+r[1],0)/hrvLog.length;
-        csv = 'metric,value\n'; csv += `rmssd_mean,${avg.toFixed(4)}\nrmssd_last,${hrvLog[hrvLog.length-1][1].toFixed(4)}\nn_measurements,${hrvLog.length}\n`;
+        csv = 'timestamp,rmssd,sdnn,mean_rr,n\n';
+        hrvLog.forEach(r => {
+            csv += `${r[0]},${(r[1] ?? '').toFixed?.(4) ?? ''},${(r[2] ?? '').toFixed?.(4) ?? ''},${(r[3] ?? '').toFixed?.(2) ?? ''},${r[4] ?? ''}\n`;
+        });
         zip.file('hrv.csv', csv);
     }
     try {
@@ -518,7 +563,7 @@ async function init() {
     adapter = new BrowserAdapter({
         videoElement: videoEl,
         canvases: { bvp: plotCanvas, trend: trendCanvas },
-        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.3.5/models/',
+        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.4.0/models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
     });
 
@@ -533,10 +578,10 @@ async function init() {
         else { elHr.textContent = '-'; elHr.classList.remove('active'); }
     });
 
-    // ── HRV ──
-    vc.on('hrv', ({ rmssd }) => {
-        hrvLog.push([Date.now(), rmssd]);
-        elRmssd.textContent = rmssd.toFixed(1);
+    // ── HRV (panel only shows RMSSD; SAVE keeps all fields) ──
+    vc.on('hrv', (e) => {
+        hrvLog.push([Date.now(), e.rmssd, e.sdnn, e.meanRR, e.n]);
+        elRmssd.textContent = e.rmssd.toFixed(1);
     });
 
     // ── BVP + latency ──
@@ -568,6 +613,24 @@ async function init() {
         currentGazePitch = kfGazePitch.update(pitchDeg);
         if (time != null) document.getElementById('gazeTime').textContent = time.toFixed(0) + 'ms';
         if (isRunning) gazeLog.push([Date.now(), currentGazeYaw, currentGazePitch]);
+    });
+
+    // ── Eye state (OCEC) ──
+    vc.on('eyestate', ({ left, right, time }) => {
+        const pillL = document.getElementById('eyePillLeft');
+        const pillR = document.getElementById('eyePillRight');
+        const probL = document.getElementById('eyeProbLeft');
+        const probR = document.getElementById('eyeProbRight');
+        pillL.classList.toggle('open',   left.open);
+        pillL.classList.toggle('closed', !left.open);
+        pillR.classList.toggle('open',   right.open);
+        pillR.classList.toggle('closed', !right.open);
+        probL.textContent = left.prob.toFixed(2);
+        probR.textContent = right.prob.toFixed(2);
+        if (time != null) document.getElementById('eyeStateTime').textContent = time.toFixed(1) + 'ms';
+        // Pull boxes off the adapter so face event can draw them
+        lastEyeBoxes = adapter._lastEyeBoxes || null;
+        if (isRunning) eyeLog.push([Date.now(), left.prob, right.prob, left.open ? 1 : 0, right.open ? 1 : 0]);
     });
 
     // ── Beat ──
@@ -611,7 +674,7 @@ async function init() {
     isRunning = true;
 
     // Reset logs
-    bvpLog = []; hrLog = []; emotionLog = []; gazeLog = []; headLog = []; hrvLog = [];
+    bvpLog = []; hrLog = []; emotionLog = []; gazeLog = []; headLog = []; hrvLog = []; eyeLog = [];
     kfEmotions = null; smoothedEmotionProbs = null;
     kfGazeYaw = null; kfGazePitch = null;
     lastFpsTime = performance.now();

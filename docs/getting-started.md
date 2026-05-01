@@ -28,7 +28,7 @@ Create a file called `index.html`:
   <button id="startBtn">Start</button>
 
   <script type="module">
-    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.14/src/index.js';
+    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.4.0/src/index.js';
 
     const adapter = new BrowserAdapter({
       videoElement: document.getElementById('cam'),
@@ -102,15 +102,28 @@ adapter.vitalcamera.on('headpose', ({ yaw, pitch, roll }) => {
 });
 ```
 
+### Add eye state (open / closed)
+
+```javascript
+adapter.vitalcamera.on('eyestate', ({ left, right, bothClosed }) => {
+  console.log('eyes:', left.open ? 'open' : 'shut',
+                       right.open ? 'open' : 'shut',
+              '— probs:', left.prob.toFixed(2), right.prob.toFixed(2));
+});
+```
+
 ### Add HRV (Heart Rate Variability)
 
 ```javascript
-adapter.vitalcamera.on('hrv', ({ rmssd }) => {
-  console.log('RMSSD:', rmssd.toFixed(1), 'ms');
+adapter.vitalcamera.on('hrv', ({ rmssd, sdnn, meanRR }) => {
+  console.log('RMSSD:', rmssd.toFixed(1), 'ms',
+              ' SDNN:', sdnn.toFixed(1), 'ms',
+              ' mean RR:', meanRR.toFixed(0), 'ms');
 });
 ```
 
 HRV requires at least 15 seconds of clean BVP signal before the first reading.
+Computation runs inside the PSD worker — zero main-thread cost.
 
 ### Use with npm / bundlers
 
@@ -130,10 +143,11 @@ By default, all models are loaded (rPPG, emotion, gaze). To save bandwidth:
 ```javascript
 import { BrowserAdapter } from 'vitalcamera-sdk';
 
-// Heart rate only — skip emotion & gaze models
+// Heart rate only — skip emotion, gaze, eye-state
 const models = await BrowserAdapter.loadModels('./models/', {
-  emotion: false,
-  gaze: false,
+  emotion:  false,
+  gaze:     false,
+  eyeState: false,
 });
 
 const adapter = new BrowserAdapter({
@@ -165,7 +179,8 @@ Expected files in `models/`:
 | `state.gz` | Warm-start state (required) |
 | `enet_b0_8_best_vgaf_dynamic_int8.tflite` | Emotion (optional) |
 | `mobileone_s0_gaze_float16.tflite` | Gaze (optional) |
-| `blaze_face_short_range.tflite` | MediaPipe face detector (auto-loaded by built-in detector) |
+| `ocec_p.tflite` | OCEC eye open/closed (optional, ~112 KB) |
+| `blaze_face_short_range.tflite` | MediaPipe face detector (auto-loaded) |
 
 ### Bring your own face detector
 
