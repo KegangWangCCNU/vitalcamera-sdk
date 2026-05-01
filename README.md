@@ -8,7 +8,7 @@ Browser-based real-time physiological sensing — extract heart rate, HRV, emoti
 
 - **Heart Rate (rPPG)** — remote photoplethysmography via face video using State Space Models
 - **HRV** — RMSSD and other heart rate variability metrics from BVP peak detection
-- **Emotion** — 8-class facial emotion recognition (EfficientNet-B0)
+- **Emotion** — 8-class facial emotion recognition (EfficientNet-B0), with optional per-user calibration from a few face photos
 - **Gaze** — yaw/pitch eye direction estimation (MobileOne-S0)
 - **Eye State** — per-eye open/closed classification + blink (OCEC, 112 KB)
 - **Head Pose** — yaw/pitch/roll from MediaPipe face landmarks
@@ -60,6 +60,30 @@ adapter.vitalcamera.on('face', ({ box, keypoints }) => {
 
 adapter.start();
 ```
+
+### Personalize the emotion baseline (optional)
+
+Out of the box, emotion classification uses a built-in baseline tuned for Asian
+faces — Anger / Contempt / Disgust biases at rest are corrected automatically.
+For per-user accuracy, supply 2+ neutral-expression photos as base64 data URLs:
+
+```javascript
+const adapter = new BrowserAdapter({
+    videoElement: document.getElementById('cam'),
+    emotionCalibration: {
+        images: [
+            'data:image/jpeg;base64,/9j/4AAQ...',
+            'data:image/jpeg;base64,/9j/4AAQ...',
+        ],
+    },
+});
+
+await adapter.init();   // calibration runs once during init, fully transparent
+```
+
+The `'emotion'` event payload is identical with or without calibration —
+calibration happens silently inside the SDK. See
+[docs/configuration.md](docs/configuration.md#emotion-calibration) for details.
 
 ### Heart Rate Only (minimal resource usage)
 
@@ -235,4 +259,10 @@ By using or distributing this software, you agree to the following additional te
 
 1. **Strict Local Processing** — All biometric inference must be performed on the local device. You must NOT transmit user video feeds or physiological metrics to any external server.
 2. **Consent Requirement** — You shall not use this Software to collect physiological data from any individual without their explicit consent.
-3. **No Backdoors*
+3. **No Backdoors** — Redistributions must maintain these local-processing guarantees.
+
+See [NOTICE](./NOTICE) for full third-party attribution.
+
+---
+
+*This SDK was built with the assistance of [Claude Code](https://claude.ai/code) by Anthropic.*

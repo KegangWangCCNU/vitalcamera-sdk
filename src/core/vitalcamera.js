@@ -398,6 +398,16 @@ class VitalCamera {
             return;
         }
 
+        if (type === 'probeResult' && data.payload) {
+            const r = this._probeResolvers?.get(data.payload.requestId);
+            if (r) {
+                this._probeResolvers.delete(data.payload.requestId);
+                if (data.payload.error) r.reject(new Error(data.payload.error));
+                else r.resolve(data.payload.logits);
+            }
+            return;
+        }
+
         if (type !== 'result') return;
 
         // Workers send { type: 'result', payload: { ... } } — unwrap payload
@@ -634,7 +644,10 @@ class VitalCamera {
             case 'emotion':
                 worker.postMessage({
                     type: 'init',
-                    payload: { modelBuffer: this.models.emotion },
+                    payload: {
+                        modelBuffer: this.models.emotion,
+                        baselineLogits: this.config.emotionBaseline,   // undefined → keep default
+                    },
                 });
                 break;
             case 'gaze':
@@ -650,6 +663,44 @@ class VitalCamera {
                 });
                 break;
         }
+    }
+
+    /**
+     * @internal — used by BrowserAdapter to install the user-specific
+     * baseline computed from `emotionCalibration.images` at init time.
+     * Not part of the public surface; emotion calibration is meant to
+     * be invisible to the consumer.
+     */
+    _setEmotionBaseline(baselineLogits) {
+        this._postIfReady('emotion', { type: 'setBaseline', payload: { baselineLogits } });
+    }
+
+    /**
+     * @internal — used by BrowserAdapter to run a single emotion inference
+     * during the image-based calibration flow at init time. Returns the raw
+     * logits without emitting an `'emotion'` event.
+     *
+     * @param {Float32Array} imgData  1×224×224×3 face crop, ImageNet-normalised
+     * @returns {Promise<number[]>}    raw 8-class logits
+     */
+    _probeEmotion(imgData) {
+        const w = this._workers.emotion;
+        if (!w || !this._workerReady.emotion) {
+            return Promise.reject(new Error('Emotion worker not ready'));
+        }
+        if (!this._probeResolvers) this._probeResolvers = new Map();
+        if (this._nextProbeId === undefined) this._nextProbeId = 0;
+        const requestId = ++this._nextProbeId;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                if (this._probeResolvers.has(requestId)) {
+                    this._probeResolvers.delete(requestId);
+                    reject(new Error('Emotion probe timed out'));
+                }
+            }, 5000);
+            this._probeResolvers.set(requestId, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject });
+            w.postMessage({ type: 'probe', payload: { imgData, requestId } });
+        });
     }
 
     /**

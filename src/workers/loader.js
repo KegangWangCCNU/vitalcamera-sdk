@@ -53,7 +53,12 @@ export async function createWorker(name, basePath) {
 
     let code = _sourceCache.get(name);
     if (!code) {
-        const resp = await fetch(url);
+        // cache: 'no-cache' forces a revalidation request (If-None-Match etc).
+        // Without it, browsers can hold on to stale worker source even across
+        // hard refreshes, because workers are loaded via fetch + Blob URL,
+        // not <script>, and Ctrl+Shift+R doesn't bust that cache.
+        // CDN cost is one tiny 304 round-trip per worker per page load.
+        const resp = await fetch(url, { cache: 'no-cache' });
         if (!resp.ok) {
             throw new Error(
                 `[VitalCamera] Failed to load worker "${name}" from ${url} (${resp.status})`

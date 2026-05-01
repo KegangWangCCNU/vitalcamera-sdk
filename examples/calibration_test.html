@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vital Camera — Calibration End-to-End Test</title>
+    <style>
+        :root {
+            --bg: #f5f0e8; --surface: #ffffff;
+            --text-primary: #1a1a1a; --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+            --border: rgba(0,0,0,0.12);
+            --accent: #c96442; --accent-soft: rgba(201,100,66,0.12);
+            --ok: #2f9e44; --warn: #c92a2a;
+            --radius: 10px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh; padding: 24px; -webkit-font-smoothing: antialiased;
+            line-height: 1.45;
+        }
+        .wrap { max-width: 1080px; margin: 0 auto; }
+        h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+        .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 18px; }
+
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 16px; margin-bottom: 14px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        h2 { font-size: 14px; font-weight: 600; color: var(--text-secondary);
+             text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+
+        /* image input + thumbs */
+        .picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+        .file-btn {
+            background: var(--accent-soft); color: var(--accent);
+            border: 1px dashed var(--accent); border-radius: 8px;
+            padding: 10px 14px; font-size: 13px; cursor: pointer;
+            font-family: inherit; font-weight: 500;
+        }
+        .file-btn:hover { background: rgba(201,100,66,0.18); }
+        input[type=file] { display: none; }
+        .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .thumb {
+            width: 70px; height: 70px; border-radius: 8px;
+            border: 1px solid var(--border); object-fit: cover; background: #eee;
+        }
+        .count { color: var(--text-secondary); font-size: 12px; }
+
+        /* go button */
+        .go {
+            background: var(--accent); color: #fff; border: none;
+            padding: 11px 22px; border-radius: 8px; font-size: 14px;
+            font-family: inherit; font-weight: 500; cursor: pointer;
+            transition: background 0.15s, opacity 0.15s;
+        }
+        .go:hover:not(:disabled) { background: #b35637; }
+        .go:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        /* status log */
+        .log {
+            font-family: "SF Mono", "Menlo", "Consolas", monospace;
+            font-size: 12px; line-height: 1.55;
+            background: #1a1a1a; color: #d8d8d8;
+            border-radius: 8px; padding: 12px;
+            max-height: 220px; overflow-y: auto; white-space: pre-wrap;
+        }
+        .log .ok { color: #74c69d; }
+        .log .err { color: #ff8a80; }
+        .log .info { color: #74a9ff; }
+
+        /* bars */
+        .bars { display: grid; gap: 6px; }
+        .row { display: grid; grid-template-columns: 90px 1fr 42px; align-items: center; gap: 8px; font-size: 12px; }
+        .label { color: var(--text-secondary); }
+        .track { height: 10px; background: rgba(0,0,0,0.06); border-radius: 5px; overflow: hidden; }
+        .fill { height: 100%; background: var(--accent); border-radius: 5px; transition: width 0.15s; }
+        .pct  { text-align: right; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+        /* video */
+        #video { width: 100%; max-width: 480px; border-radius: 8px;
+                 background: #000; aspect-ratio: 4 / 3; object-fit: cover; }
+
+        .grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+        @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+
+        .pill {
+            display: inline-block; padding: 2px 8px; border-radius: 999px;
+            font-size: 11px; font-weight: 500; margin-left: 8px;
+        }
+        .pill.ok { background: rgba(47,158,68,0.12); color: var(--ok); }
+        .pill.idle { background: rgba(0,0,0,0.06); color: var(--text-secondary); }
+
+        details { margin-top: 10px; font-size: 12px; }
+        details summary { cursor: pointer; color: var(--text-secondary); }
+        pre { background: #f7f3ec; padding: 8px; border-radius: 6px;
+              font-family: "SF Mono", "Menlo", monospace; font-size: 11px;
+              overflow-x: auto; margin-top: 6px; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+
+    <h1>Calibration End-to-End Test</h1>
+    <p class="sub">
+        Upload ≥2 face photos, run the SDK with
+        <code>emotionCalibration: { images: [...] }</code>, and watch the
+        live emotion bars to verify the baseline takes effect.
+    </p>
+
+    <div class="card">
+        <h2>1. Pick face images <span id="statusPill" class="pill idle">idle</span></h2>
+        <div class="picker">
+            <label class="file-btn" for="fileInput">Choose image(s)</label>
+            <input id="fileInput" type="file" accept="image/*" multiple>
+            <span class="count" id="countLabel">no images selected</span>
+        </div>
+        <div class="thumbs" id="thumbs"></div>
+    </div>
+
+    <div class="card">
+        <h2>2. Run</h2>
+        <button id="goBtn" class="go" disabled>Calibrate &amp; Start Camera</button>
+        <p style="font-size:12px; color:var(--text-secondary); margin-top:8px;">
+            Need at least 2 usable images (the SDK throws otherwise). The page
+            will use whichever camera the browser hands it. After init, watch
+            the bars below — if calibration worked, Neutral should dominate
+            when you're at rest.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>3. Status</h2>
+        <div id="log" class="log">waiting…</div>
+        <details>
+            <summary>Computed baseline (raw logits)</summary>
+            <pre id="baselineDump">— (will appear after calibration)</pre>
+        </details>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2>Live camera</h2>
+            <video id="video" autoplay muted playsinline></video>
+        </div>
+        <div class="card">
+            <h2>Calibrated emotion probs</h2>
+            <div class="bars" id="bars"></div>
+            <p style="font-size:11px; color:var(--text-tertiary); margin-top:10px;">
+                These probs are the SDK's *output* — calibration is already baked in.
+                If the ‘emotion’ event ever exposed <code>logits</code> or
+                <code>calibrated</code>, that would be a leak.
+            </p>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+import { BrowserAdapter, EMOTION_LABELS } from '../src/index.js';
+
+// ─── DOM ───
+const fileInput   = document.getElementById('fileInput');
+const thumbs      = document.getElementById('thumbs');
+const countLabel  = document.getElementById('countLabel');
+const goBtn       = document.getElementById('goBtn');
+const logEl       = document.getElementById('log');
+const baselineDump = document.getElementById('baselineDump');
+const statusPill  = document.getElementById('statusPill');
+const videoEl     = document.getElementById('video');
+const barsEl      = document.getElementById('bars');
+
+// ─── Bars ───
+function buildBars() {
+    barsEl.innerHTML = '';
+    EMOTION_LABELS.forEach((label, i) => {
+        const row = document.createElement('div'); row.className = 'row';
+        row.innerHTML = `
+            <div class="label">${label}</div>
+            <div class="track"><div class="fill" id="fill_${i}" style="width:0%"></div></div>
+            <div class="pct"  id="pct_${i}">0%</div>`;
+        barsEl.appendChild(row);
+    });
+}
+buildBars();
+
+// ─── Logger ───
+function log(msg, kind = '') {
+    const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
+    const cls = kind ? ` class="${kind}"` : '';
+    logEl.innerHTML += `<div${cls}>[${time}] ${msg}</div>`;
+    logEl.scrollTop = logEl.scrollHeight;
+}
+function clearLog() { logEl.innerHTML = ''; }
+
+// ─── File picker ───
+const selectedImages = []; // array of base64 data-URLs
+fileInput.addEventListener('change', async (e) => {
+    selectedImages.length = 0;
+    thumbs.innerHTML = '';
+    const files = Array.from(e.target.files || []);
+    for (const f of files) {
+        try {
+            const url = await new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onload  = () => resolve(r.result);
+                r.onerror = () => reject(r.error);
+                r.readAsDataURL(f);
+            });
+            selectedImages.push(url);
+            const img = document.createElement('img');
+            img.className = 'thumb'; img.src = url;
+            thumbs.appendChild(img);
+        } catch (err) {
+            log(`failed to read ${f.name}: ${err.message}`, 'err');
+        }
+    }
+    countLabel.textContent =
+        selectedImages.length === 0 ? 'no images selected'
+        : `${selectedImages.length} image(s) selected (need ≥ 2)`;
+    goBtn.disabled = selectedImages.length < 2;
+});
+
+// ─── Run ───
+let adapter = null;
+
+goBtn.addEventListener('click', async () => {
+    if (adapter) { log('already running — reload the page to retry', 'err'); return; }
+    goBtn.disabled = true;
+    statusPill.textContent = 'loading…';
+    statusPill.className = 'pill idle';
+    clearLog();
+    log(`starting with ${selectedImages.length} image(s)…`, 'info');
+
+    try {
+        adapter = new BrowserAdapter({
+            videoElement: videoEl,
+            modelBasePath: '../models/',
+            emotionCalibration: { images: selectedImages },
+        });
+
+        // ── monkey-patch _computeEmotionBaselineFromImages so we can see the
+        //    result. Done BEFORE init(), since init() is what calls it. We
+        //    also log any thrown error here directly (init() catches it and
+        //    re-emits as a vc 'error', but that subscription only exists
+        //    AFTER init() resolves — see below). ──
+        const origCompute = adapter._computeEmotionBaselineFromImages.bind(adapter);
+        adapter._computeEmotionBaselineFromImages = async (imgs) => {
+            log(`computing baseline from ${imgs.length} image(s)…`, 'info');
+            const t0 = performance.now();
+            try {
+                const baseline = await origCompute(imgs);
+                const dt = (performance.now() - t0).toFixed(0);
+                log(`✓ baseline ready in ${dt} ms`, 'ok');
+                const labelled = baseline.map((v, i) =>
+                    `  ${EMOTION_LABELS[i].padEnd(10)} ${v >= 0 ? ' ' : ''}${v.toFixed(4)}`);
+                baselineDump.textContent = labelled.join('\n');
+                return baseline;
+            } catch (err) {
+                log(`✗ baseline computation failed: ${err.message}`, 'err');
+                throw err;
+            }
+        };
+
+        // adapter.vitalcamera is null until init() creates the inner VitalCamera.
+        await adapter.init();
+        log('✓ adapter.init() resolved', 'ok');
+
+        const vc = adapter.vitalcamera;
+        vc.on('error', (e) => {
+            log(`[error/${e.source}] ${e.message}`, 'err');
+        });
+        vc.on('emotion', ({ emotion, probs }) => {
+            if (!probs || probs.length === 0) return;
+            for (let i = 0; i < probs.length; i++) {
+                const fill = document.getElementById('fill_' + i);
+                const pct  = document.getElementById('pct_' + i);
+                if (fill) fill.style.width = (probs[i] * 100).toFixed(1) + '%';
+                if (pct)  pct.textContent  = (probs[i] * 100).toFixed(0) + '%';
+            }
+        });
+
+        adapter.start();
+        log('✓ camera + workers started — emotion events should be flowing', 'ok');
+        statusPill.textContent = 'live';
+        statusPill.className = 'pill ok';
+    } catch (err) {
+        log(`✗ failed: ${err.message}`, 'err');
+        console.error(err);
+        statusPill.textContent = 'failed';
+        statusPill.className = 'pill idle';
+        adapter = null;
+        goBtn.disabled = false;
+    }
+});
+</script>
+</body>
+</html>

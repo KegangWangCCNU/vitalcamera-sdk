@@ -17,6 +17,9 @@ const adapter = new BrowserAdapter({
   faceDetector: null,          // Custom face detector function
   workerBasePath: null,        // Custom worker script path (rarely needed)
 
+  emotionCalibration: null,    // { images: string[] } — optional per-user baseline
+                               // (see "Emotion calibration" section below)
+
   canvases: {                  // Built-in waveform rendering
     bvp: bvpCanvas,            // Canvas for BVP waveform
     trend: trendCanvas,        // Canvas for HR trend line
@@ -97,6 +100,69 @@ Seconds of accumulated BVP data required before the first HRV computation. Short
 #### `hrvUpdateInterval` (default: `1000`)
 
 Milliseconds between HRV recalculations. The HRV pipeline (interpolation → peak detection → RR filtering → RMSSD) runs on every update.
+
+---
+
+## Emotion calibration
+
+The 8-class emotion model has a known bias against neutral Asian male faces —
+without calibration, `Anger` / `Contempt` are over-predicted at rest. The SDK
+addresses this in two layers:
+
+### 1. Built-in default baseline (zero config)
+
+If you don't pass `emotionCalibration`, the SDK uses a **built-in baseline tuned
+for Asian faces**. This is applied automatically inside the emotion worker;
+no user code change needed. For most users this is enough.
+
+### 2. Per-user calibration via `emotionCalibration.images`
+
+For best accuracy, supply 2+ photos of the user with a neutral expression. The
+SDK runs them through the emotion model once during `init()` and uses the
+averaged logits as that user's personal baseline:
+
+```javascript
+const adapter = new BrowserAdapter({
+    videoElement: document.getElementById('cam'),
+    emotionCalibration: {
+        images: [
+            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+        ],
+    },
+});
+
+await adapter.init();
+adapter.start();
+```
+
+**Requirements:**
+
+- Each entry is a base64 data URL (or any string a `<img>` element accepts in `src`).
+- At least 2 images must be usable. Face detection runs on each — if BlazeFace
+  fails on an image, the SDK falls back to the full image. If fewer than 2 images
+  yield a usable crop, init() proceeds with the **default baseline** and an
+  `'error'` event is emitted with `source: 'emotionCalibration'`.
+- 5–10 frontal, well-lit, neutral-expression photos give the best result.
+
+**What happens under the hood (informational only):**
+
+The SDK applies a KL-divergence-based blend internally, mixing 30% of the
+baseline distribution with 70% of a calibration-deviation distribution. None of
+this is exposed in the `'emotion'` event — payload is always
+`{ emotion, probs, time, timestamp }` regardless of which baseline mode is in
+use. Calibration is fully transparent to API consumers.
+
+### When NOT to calibrate
+
+- If you're building for a global / mixed-ethnicity audience and can't collect
+  per-user photos: just don't pass `emotionCalibration`. The default Asian baseline
+  is still better than no calibration for many users, and the SDK will work
+  out-of-the-box.
+- If you want to see raw model output for debugging: there's no public way to
+  disable calibration. Build against `src/workers/emotion.worker.js` directly
+  (out of scope for production use).
 
 ---
 

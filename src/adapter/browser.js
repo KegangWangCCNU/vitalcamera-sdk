@@ -214,6 +214,16 @@ export default class BrowserAdapter {
      *        When true (default) and videoElement is provided, adapter opens
      *        the camera and sets video.srcObject. Set to false if you manage
      *        the MediaStream yourself but still want the auto frame loop.
+     * @param {Object} [config.emotionCalibration]
+     *        Per-user emotion calibration — applied invisibly to every
+     *        `'emotion'` event. Pass an array of base64 face images of the
+     *        end-user (≥ 2, more is better; resting / neutral expressions),
+     *        e.g. captured from a one-time onboarding flow:
+     *          `emotionCalibration: { images: ['data:image/jpeg;base64,…', …] }`
+     *        Each image is face-detected, cropped, ImageNet-normalised and
+     *        run through the emotion model; the per-class average logit
+     *        becomes the user's baseline. If omitted, the SDK falls back to
+     *        a built-in default baseline tuned to Asian resting faces.
      */
     constructor(config = {}) {
         this._video = config.videoElement || null;
@@ -225,6 +235,7 @@ export default class BrowserAdapter {
         this._canvases = config.canvases || null;
         this._customDetector = config.faceDetector || null;
         this._manageCamera = config.manageCamera !== false;
+        this._emotionCalibration = config.emotionCalibration || null;
 
         /** @type {VitalCamera|null} */
         this._vs = null;
@@ -298,7 +309,9 @@ export default class BrowserAdapter {
             this._models = await BrowserAdapter.loadModels(this._modelBasePath);
         }
 
-        // 1. Create VitalCamera core
+        // 1. Create VitalCamera core (emotion worker boots with the SDK's
+        //    built-in Asian default baseline; we may override it below if
+        //    the caller supplied calibration images).
         this._vs = new VitalCamera({
             ...this._vsConfig,
             models: this._models,
@@ -309,6 +322,22 @@ export default class BrowserAdapter {
         // 2. Load face detector
         if (!this._customDetector) {
             await this._loadBlazeFace();
+        }
+
+        // 2b. Image-based emotion calibration — only runs if the caller passed
+        //     `emotionCalibration.images`. Otherwise the worker keeps its
+        //     built-in default Asian baseline. Either way, every `'emotion'`
+        //     event downstream looks identical to the consumer.
+        const cal = this._emotionCalibration;
+        if (cal && Array.isArray(cal.images) && cal.images.length > 0
+            && this._models.emotion && this._vs._workers.emotion) {
+            try {
+                const baseline = await this._computeEmotionBaselineFromImages(cal.images);
+                this._vs._setEmotionBaseline(baseline);
+            } catch (err) {
+                this._vs?.emit('error', { source: 'emotionCalibration', message: err.message });
+                // Fall through: worker keeps its default Asian baseline
+            }
         }
 
         // 3. Start camera only if videoElement provided and manageCamera is on
@@ -868,6 +897,62 @@ export default class BrowserAdapter {
      * @param {boolean} [options.eyeState=true] Load the OCEC eye open/closed model.
      * @returns {Promise<Object>} Model buffers ready for VitalCamera.
      */
+    /**
+     * Compute an emotion-calibration baseline from a set of base64 face images.
+     * Averages the raw logits returned by the emotion worker — the same
+     * formula that examples/calibrate.html uses, but headless.
+     *
+     * @param {string[]} images  Array of base64 / data-URL strings.
+     * @returns {Promise<number[]>}  8-element baselineLogits.
+     * @private
+     */
+    async _computeEmotionBaselineFromImages(images) {
+        const N = 8;
+        const sum = new Float64Array(N);
+        let nOk = 0;
+        for (const src of images) {
+            let img;
+            try {
+                img = await new Promise((resolve, reject) => {
+                    const el = new Image();
+                    el.onload  = () => resolve(el);
+                    el.onerror = () => reject(new Error('image load failed'));
+                    el.src = src;
+                });
+            } catch (_) { continue; }
+
+            const w = img.naturalWidth || img.width;
+            const h = img.naturalHeight || img.height;
+            if (!w || !h) continue;
+
+            const tmp = new OffscreenCanvas(w, h);
+            const tctx = tmp.getContext('2d');
+            tctx.drawImage(img, 0, 0, w, h);
+
+            // Try face detection; if it fails, fall back to using the whole image.
+            let cropBox = { x: 0, y: 0, w, h };
+            try {
+                const det = await this._detectFace(tmp);
+                if (det && det.box) cropBox = padBox(det.box, w, h, 0.15);
+            } catch (_) { /* keep full-image fallback */ }
+
+            const imgData = cropAndResize(tctx, cropBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
+            try {
+                const logits = await this._vs._probeEmotion(imgData);
+                if (Array.isArray(logits) && logits.length === N) {
+                    for (let i = 0; i < N; i++) sum[i] += logits[i];
+                    nOk++;
+                }
+            } catch (_) { /* skip this image */ }
+        }
+        if (nOk < 2) {
+            throw new Error(`emotionCalibration.images: only ${nOk} image(s) usable, need ≥ 2`);
+        }
+        const baseline = new Array(N);
+        for (let i = 0; i < N; i++) baseline[i] = sum[i] / nOk;
+        return baseline;
+    }
+
     static async loadModels(basePath = './models/', options = {}) {
         const { emotion = true, gaze = true, eyeState = true } = options;
         const base = basePath.endsWith('/') ? basePath : basePath + '/';

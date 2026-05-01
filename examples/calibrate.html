@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emotion Calibration · Vital Camera</title>
+    <style>
+        :root {
+            --bg: #f5f0e8; --surface: #ffffff;
+            --text-primary: #1a1a1a; --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+            --border: rgba(0,0,0,0.12);
+            --accent: #c96442;
+            --radius: 12px; --radius-sm: 8px;
+            --shadow-md: 0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg); color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh; display: flex; justify-content: center; align-items: center;
+            padding: 32px 16px; -webkit-font-smoothing: antialiased;
+        }
+        #card {
+            width: 720px; max-width: 100%;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: var(--shadow-md);
+            padding: 24px;
+        }
+        h1 {
+            font-family: 'Times New Roman', Georgia, serif; font-style: italic;
+            font-weight: 400; font-size: 32px; line-height: 1.2; margin-bottom: 4px;
+        }
+        h1 .accent { color: var(--accent); }
+        .subtitle { color: var(--text-secondary); font-size: 14px; margin-bottom: 20px; }
+        .stage { padding: 12px 0; }
+        #video-wrap {
+            position: relative; width: 100%; aspect-ratio: 4/3;
+            background: #e8e2d8; border-radius: var(--radius-sm); overflow: hidden;
+        }
+        #cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+        #cam { object-fit: cover; }
+        button {
+            background: var(--accent); color: #fff; border: none; padding: 10px 24px;
+            border-radius: 20px; font-size: 14px; font-weight: 500; font-family: inherit;
+            cursor: pointer; box-shadow: var(--shadow-md);
+            transition: opacity 0.15s, transform 0.05s;
+        }
+        button:hover:not(:disabled) { opacity: 0.92; }
+        button:active:not(:disabled) { transform: scale(0.98); }
+        button:disabled { background: #c4b8ac; color: var(--surface); cursor: not-allowed; }
+        button.secondary {
+            background: #f0ebe3; color: var(--text-primary); border: 1px solid var(--border); box-shadow: none;
+        }
+        .row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+        .row.center { justify-content: center; }
+        .status { color: var(--text-secondary); font-size: 13px; min-height: 20px; }
+        .progress-track {
+            flex: 1; height: 6px; background: rgba(0,0,0,0.06); border-radius: 3px; overflow: hidden;
+        }
+        .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.1s linear; }
+
+        .bars { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-top: 12px; }
+        .bar-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; }
+        .bar-name { width: 80px; color: var(--text-secondary); }
+        .bar-track { flex: 1; height: 6px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden; }
+        .bar-fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.15s; }
+        .bar-pct { width: 40px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+
+        pre {
+            background: #f7f3ec; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 12px; font-size: 12px; line-height: 1.5; overflow-x: auto;
+            font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+            color: var(--text-primary);
+        }
+        .info { background: #fef9f0; border-left: 3px solid var(--accent);
+            padding: 10px 14px; border-radius: 4px; font-size: 13px; line-height: 1.6;
+            color: var(--text-secondary); margin: 16px 0;
+        }
+        .ok { color: #5a9e6f; }
+        .warn { color: var(--accent); }
+    </style>
+</head>
+<body>
+<div id="card">
+    <h1><span class="accent">Vital</span> Camera <span style="font-size:18px;color:var(--text-tertiary)">— emotion calibration</span></h1>
+    <p class="subtitle">Capture your resting-face baseline to remove the model's per-class bias.</p>
+
+    <div class="info">
+        <strong>How it works:</strong> stay still with a neutral expression for 5 seconds. We record the
+        model's softmax distribution at rest and call that the baseline. At runtime two distributions
+        are mixed linearly: <code>output = 0.3 · pBase + 0.7 · pCal</code>. The calibrated component
+        <code>pCal</code> peaks at <em>100 % Neutral when the current distribution exactly matches the
+        baseline</em> (KL divergence = 0); as the KL grows it hands probability mass to whichever
+        classes actually rose above their baseline. The 0.3 / 0.7 weights and τ = 0.6 are fixed and
+        baked into the SDK — pass the resulting <code>baselineLogits</code> array to
+        <code>new BrowserAdapter({ emotionCalibration: { images: [...base64...] } })</code> (use this page only for inspecting the bias and τ math — the SDK itself only accepts a list of face images, not pre-computed logits).
+    </div>
+
+    <div id="video-wrap">
+        <video id="cam" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+        <button id="startBtn" disabled>Loading models…</button>
+        <button id="resetBtn" class="secondary" style="display:none">Clear saved baseline</button>
+        <span class="status" id="status"></span>
+    </div>
+    <div class="row">
+        <span style="font-size:12px;color:var(--text-tertiary);width:80px">Progress</span>
+        <div class="progress-track"><div class="progress-fill" id="progressBar"></div></div>
+    </div>
+
+    <h3 style="margin:12px 0 4px;font-size:14px">Live emotion (raw — pre-calibration)</h3>
+    <div class="bars" id="bars"></div>
+
+    <h3 style="margin:16px 0 4px;font-size:14px" id="calBarsHeader" style="display:none">After calibration (KL-divergence share)</h3>
+    <div class="bars" id="calBars" style="display:none"></div>
+    <!-- τ is locked to 0.6 in the SDK; keeping the slider out keeps calibrate.html
+         in sync with what BrowserAdapter actually applies at runtime. -->
+
+    <h3 style="margin:16px 0 4px;font-size:14px">Result</h3>
+    <pre id="result">No baseline captured yet.</pre>
+
+    <div class="row">
+        <button id="downloadBtn" class="secondary" disabled>Download JSON</button>
+        <button id="copyBtn" class="secondary" disabled>Copy</button>
+        <span class="status" id="saveStatus"></span>
+    </div>
+
+    <p style="margin-top:16px;font-size:12px;color:var(--text-tertiary)">
+        Stored at <code>localStorage["vitalcamera_emotion_baseline"]</code>.
+        The dev demo (<a href="demo.html">demo.html</a>) reads it on init.
+    </p>
+</div>
+
+<script type="module">
+import { BrowserAdapter, EMOTION_LABELS, EMOTION_EMOJIS, EMOTION_COLORS }
+    from '../src/index.js';
+
+const STORAGE_KEY = 'vitalcamera_emotion_baseline';
+const NUM_CLASSES = EMOTION_LABELS.length;     // should be 8
+
+// Build the live-emotion bars (raw + calibrated)
+function buildBars(rootId, prefix) {
+    const root = document.getElementById(rootId);
+    EMOTION_LABELS.forEach((label, i) => {
+        const row = document.createElement('div');
+        row.className = 'bar-row';
+        row.innerHTML = `
+            <span class="bar-name">${EMOTION_EMOJIS[i]} ${label}</span>
+            <div class="bar-track"><div class="bar-fill" id="${prefix}_${i}" style="background:${EMOTION_COLORS[i]}"></div></div>
+            <span class="bar-pct" id="${prefix}_pct_${i}">0%</span>
+        `;
+        root.appendChild(row);
+    });
+}
+buildBars('bars',    'bar');
+buildBars('calBars', 'cal');
+
+const $ = id => document.getElementById(id);
+
+// State
+let adapter = null;
+let captureActive = false;
+let captureLogits = null;     // [Float64Array(NUM_CLASSES), ...]
+let captureStart = 0;
+let activeBaseline = null;    // applied live for the side-by-side preview
+const CAPTURE_MS = 5000;
+const neutralIdx = EMOTION_LABELS.indexOf('Neutral');
+const currentTau = 0.6;     // locked — matches the value baked into the SDK
+
+/**
+ * Calibrated emotion probabilities — linear blend of two well-defined
+ * distributions, no hard cap or if-truncation.
+ *
+ *   pCur[i]       = softmax(logits)[i]
+ *   pBase[i]      = softmax(baseline)[i]
+ *   klContrib[i]  = pCur[i] · log( pCur[i] / pBase[i] )
+ *   KL            = Σ klContrib    (≥ 0; 0 iff pCur ≡ pBase)
+ *
+ *   conf          = exp(−KL / τ)             ← "still at rest" confidence
+ *
+ *   pCal[Neutral] = conf                      ← peaks at 1 when KL = 0
+ *   pCal[i]       = (1 − conf) · max(0, klContrib[i]) / Σ pos klContrib   (i ≠ Neutral)
+ *
+ *   output  =  0.3 · pBase  +  0.7 · pCal     ← final linear mix
+ *
+ * No hard cap — the visible "70 % Neutral at calibration" naturally falls out
+ * of the 0.3 / 0.7 mix coefficients (pCal carries 1.0 at the Neutral entry
+ * when KL = 0, scaled by 0.7 → ≈ 70 %; the residual 30 % comes from the
+ * baseline distribution, which preserves the model's natural per-class
+ * tilt). Invariant to logit translation.
+ */
+function applyCalibration(logits, baseline, nIdx, tau) {
+    const N = logits.length;
+
+    const softmaxOf = (arr) => {
+        let m = -Infinity; for (const v of arr) if (v > m) m = v;
+        const e = arr.map(v => Math.exp(v - m));
+        let s = 0; for (const v of e) s += v;
+        return e.map(v => v / s);
+    };
+    const pCur  = softmaxOf(logits);
+    const pBase = softmaxOf(baseline);
+
+    const eps = 1e-9;
+    const klContrib = pCur.map((p, i) =>
+        p > 0 ? p * Math.log((p + eps) / (pBase[i] + eps)) : 0
+    );
+    let kl = 0; for (const c of klContrib) kl += c;
+    if (kl < 0) kl = 0;
+
+    const conf = Math.exp(-kl / tau);
+
+    // pCal — the "purely calibrated" distribution
+    const pCal = new Array(N).fill(0);
+    pCal[nIdx] = conf;
+    let klPosSum = 0;
+    for (let i = 0; i < N; i++) {
+        if (i !== nIdx && klContrib[i] > 0) klPosSum += klContrib[i];
+    }
+    const denom = klPosSum + eps;       // avoid div-by-zero; harmless when KL = 0
+    const remaining = 1 - conf;
+    for (let i = 0; i < N; i++) {
+        if (i === nIdx) continue;
+        const c = klContrib[i] > 0 ? klContrib[i] : 0;
+        pCal[i] = remaining * c / denom;
+    }
+
+    // 30 % baseline + 70 % calibrated — final output
+    const out = new Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+        out[i] = 0.3 * pBase[i] + 0.7 * pCal[i];
+    }
+    return out;
+}
+
+function showCalBars() {
+    document.getElementById('calBarsHeader').style.display = '';
+    document.getElementById('calBars').style.display = '';
+}
+function hideCalBars() {
+    document.getElementById('calBarsHeader').style.display = 'none';
+    document.getElementById('calBars').style.display = 'none';
+}
+hideCalBars();
+
+// τ is fixed at 0.6 to match the SDK; no slider exposed.
+
+// Existing baseline
+function loadStored() {
+    try {
+        const s = localStorage.getItem(STORAGE_KEY);
+        if (!s) return null;
+        const obj = JSON.parse(s);
+        if (Array.isArray(obj.baselineLogits) && obj.baselineLogits.length === NUM_CLASSES) {
+            return obj;
+        }
+    } catch (_) {}
+    return null;
+}
+
+const stored = loadStored();
+if (stored) {
+    $('result').textContent = JSON.stringify(stored, null, 2);
+    $('resetBtn').style.display = '';
+    $('downloadBtn').disabled = false;
+    $('copyBtn').disabled = false;
+    $('saveStatus').innerHTML = '<span class="ok">Existing baseline loaded.</span>';
+    activeBaseline = stored.baselineLogits;
+    showCalBars();
+}
+
+// Start
+async function init() {
+    $('status').textContent = 'Initialising adapter + camera…';
+    adapter = new BrowserAdapter({
+        videoElement: $('cam'),
+        modelBasePath: '../models/',
+        // Calibration only needs emotion + face — turn the rest off to load faster.
+        vitalcameraConfig: {
+            enableGaze: false,
+            enableEyeState: false,
+            enableHeadPose: false,
+            enableHrv: false,
+        },
+    });
+
+    // Load only the models we actually need
+    const {BrowserAdapter: BA} = await import('../src/index.js');
+    adapter._models = await BA.loadModels('../models/', {
+        emotion: true,
+        gaze: false,
+        eyeState: false,
+    });
+
+    await adapter.init();
+    const vc = adapter.vitalcamera;
+
+    vc.on('error', e => {
+        console.error(`[vc-error] [${e.source}] ${e.message}`);
+        $('status').innerHTML = `<span class="warn">[${e.source}] ${e.message}</span>`;
+    });
+
+    vc.on('emotion', ({ probs, logits }) => {
+        // Raw bars
+        for (let i = 0; i < probs.length; i++) {
+            $(`bar_${i}`).style.width = (probs[i] * 100).toFixed(1) + '%';
+            $(`bar_pct_${i}`).textContent = (probs[i] * 100).toFixed(0) + '%';
+        }
+        // Calibrated bars (only if a baseline is active)
+        if (activeBaseline && Array.isArray(logits) && logits.length === NUM_CLASSES) {
+            const calProbs = applyCalibration(logits, activeBaseline, neutralIdx, currentTau);
+            for (let i = 0; i < calProbs.length; i++) {
+                $(`cal_${i}`).style.width = (calProbs[i] * 100).toFixed(1) + '%';
+                $(`cal_pct_${i}`).textContent = (calProbs[i] * 100).toFixed(0) + '%';
+            }
+        }
+        // Capture
+        if (captureActive && Array.isArray(logits) && logits.length === NUM_CLASSES) {
+            captureLogits.push(Float64Array.from(logits));
+            const elapsed = performance.now() - captureStart;
+            const pct = Math.min(100, (elapsed / CAPTURE_MS) * 100);
+            $('progressBar').style.width = pct + '%';
+            if (elapsed >= CAPTURE_MS) finishCapture();
+        }
+    });
+
+    adapter.start();
+    $('startBtn').disabled = false;
+    $('startBtn').textContent = 'Start 5-second capture';
+    $('status').textContent = 'Ready. Sit still with a neutral face, then press Start.';
+}
+
+function startCapture() {
+    captureActive = true;
+    captureLogits = [];
+    captureStart = performance.now();
+    $('startBtn').disabled = true;
+    $('status').innerHTML = '<span class="warn">Capturing — keep your face neutral and still…</span>';
+    $('progressBar').style.width = '0%';
+}
+
+function finishCapture() {
+    captureActive = false;
+    if (captureLogits.length === 0) {
+        $('status').innerHTML = '<span class="warn">No samples captured. Make sure your face is in frame.</span>';
+        $('startBtn').disabled = false;
+        return;
+    }
+    // Average per-class logit
+    const N = captureLogits.length;
+    const baseline = new Array(NUM_CLASSES).fill(0);
+    for (const v of captureLogits) {
+        for (let i = 0; i < NUM_CLASSES; i++) baseline[i] += v[i];
+    }
+    for (let i = 0; i < NUM_CLASSES; i++) baseline[i] /= N;
+
+    const obj = {
+        version: 6,
+        formula: 'kl-blend-fixed',
+        labels: EMOTION_LABELS,
+        neutralIndex: neutralIdx,
+        baselineLogits: baseline,
+        // SDK constants — stored for reference; τ / weights are NOT user-tunable
+        tau: 0.6,
+        baselineWeight: 0.3,
+        calibratedWeight: 0.7,
+        nSamples: N,
+        capturedAt: new Date().toISOString(),
+        note: 'Pass baselineLogits to BrowserAdapter as { emotionCalibration: { baselineLogits } }.',
+    };
+
+    // Save to localStorage
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+
+    // Activate live side-by-side preview
+    activeBaseline = baseline;
+    showCalBars();
+
+    // Display
+    $('result').textContent = JSON.stringify(obj, null, 2);
+    $('downloadBtn').disabled = false;
+    $('copyBtn').disabled = false;
+    $('resetBtn').style.display = '';
+    $('startBtn').disabled = false;
+    $('status').innerHTML = `<span class="ok">Done — captured ${N} samples. Stored in localStorage. Live preview below shows the calibrated bars.</span>`;
+
+    // Show predicted neutral-class after calibration
+    const max = Math.max(...baseline);
+    const predicted = baseline.indexOf(max);
+    const second = [...baseline].sort((a,b)=>b-a)[1];
+    const margin = (max - second).toFixed(2);
+    console.log(
+        '[calibrate] baseline logits:', baseline,
+        '\n  → strongest pre-cal class:', EMOTION_LABELS[predicted],
+        '(margin', margin + ')',
+        '\n  → after subtracting baseline, all classes equally weighted'
+    );
+}
+
+$('startBtn').addEventListener('click', startCapture);
+$('resetBtn').addEventListener('click', () => {
+    localStorage.removeItem(STORAGE_KEY);
+    $('result').textContent = 'No baseline captured yet.';
+    $('downloadBtn').disabled = true;
+    $('copyBtn').disabled = true;
+    $('resetBtn').style.display = 'none';
+    $('saveStatus').textContent = '';
+    activeBaseline = null;
+    hideCalBars();
+});
+$('downloadBtn').addEventListener('click', () => {
+    const txt = $('result').textContent;
+    const blob = new Blob([txt], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'emotion_baseline.json';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+});
+$('copyBtn').addEventListener('click', async () => {
+    await navigator.clipboard.writeText($('result').textContent);
+    $('saveStatus').innerHTML = '<span class="ok">Copied.</span>';
+    setTimeout(() => $('saveStatus').textContent = '', 1500);
+});
+
+init().catch(err => {
+    console.error(err);
+    $('status').innerHTML = `<span class="warn">Init failed: ${err.message}</span>`;
+});
+</script>
+</body>
+</html>

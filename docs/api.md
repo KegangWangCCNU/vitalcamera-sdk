@@ -33,6 +33,9 @@ const adapter = new BrowserAdapter({
   canvases,              // { bvp: Canvas, trend: Canvas } — for built-in waveform plots
   faceDetector,          // async (source) => { box, keypoints } | null — custom detector
   manageCamera,          // boolean (default true) — auto-open camera
+  emotionCalibration,    // { images: string[] } — optional per-user emotion
+                         // baseline computed from base64 face photos
+                         // (see Configuration → Emotion calibration)
 });
 ```
 
@@ -168,22 +171,28 @@ vc.on('beat', ({ ibi, timestamp }) => {
 
 #### `'hrv'`
 
-Emitted when HRV metrics are computed (requires ≥15 seconds of clean signal).
+Emitted when HRV metrics are computed (requires ≥15 seconds of clean signal, ~1/second after warm-up).
 
 ```javascript
-vc.on('hrv', ({ rmssd, timestamp }) => {
-  // rmssd — number, root mean square of successive differences (ms)
+vc.on('hrv', ({ rmssd, sdnn, meanRR, n, timestamp }) => {
+  // rmssd  — number, root mean square of successive RR differences (ms)
+  // sdnn   — number, standard deviation of NN intervals (ms)
+  // meanRR — number, mean RR interval over the window (ms)
+  // n      — number, count of RR intervals used in this estimate
 });
 ```
 
 #### `'emotion'`
 
-Emitted with emotion classification results (~2/second).
+Emitted with emotion classification results (~2/second). The `probs` array
+already has calibration applied internally (see Configuration → Emotion
+calibration); the payload shape is identical regardless of whether the user
+supplied calibration images or the SDK fell back to its built-in baseline.
 
 ```javascript
 vc.on('emotion', ({ emotion, probs, time, timestamp }) => {
   // emotion — string, top predicted emotion label
-  // probs   — number[], probability for each of the 8 classes
+  // probs   — number[], probability for each of the 8 classes (sums to ~1.0)
   // time    — number, inference time in ms
 });
 ```
@@ -198,6 +207,23 @@ vc.on('gaze', ({ yaw, pitch, confidence, time, timestamp }) => {
   // pitch      — number, vertical gaze angle (radians)
   // confidence — [number, number], softmax peak probability for [yaw, pitch]
   // time       — number, inference time in ms
+});
+```
+
+#### `'eyestate'`
+
+Emitted every frame with per-eye open/closed classification (OCEC model). When
+both eyes are simultaneously closed for one frame, this is treated as a blink
+candidate by the consumer (the SDK does not debounce blink detection).
+
+```javascript
+vc.on('eyestate', ({ left, right, bothClosed, time, timestamp }) => {
+  // left.prob   — number, P(open) for the left eye
+  // left.open   — boolean, left.prob > eyeStateThreshold (default 0.5)
+  // right.prob  — number, P(open) for the right eye
+  // right.open  — boolean
+  // bothClosed  — boolean, !left.open && !right.open
+  // time        — number, inference time in ms (per-eye summed)
 });
 ```
 
@@ -216,15 +242,16 @@ vc.on('headpose', ({ yaw, pitch, roll, normal, timestamp }) => {
 
 #### `'face'`
 
-Emitted by BrowserAdapter every frame when a face is detected.
+Emitted by BrowserAdapter every frame, regardless of whether a face was found.
 
 ```javascript
-adapter.vitalcamera.on('face', (data) => {
-  // data.box       — { x, y, w, h }
-  // data.keypoints — [{ x, y }, ...] (6 BlazeFace keypoints, pixel coords:
-  //                  right_eye, left_eye, nose_tip, mouth, right_ear, left_ear)
-  // data.videoW    — number, video width
-  // data.videoH    — number, video height
+adapter.vitalcamera.on('face', ({ detected, box, keypoints, videoWidth, videoHeight, timestamp }) => {
+  // detected    — boolean, whether a face was found this frame
+  // box         — { x, y, w, h } | null (in pixel coords on the source video)
+  // keypoints   — [{ x, y }, ...] | null (6 BlazeFace keypoints, pixel coords:
+  //               right_eye, left_eye, nose_tip, mouth, right_ear, left_ear)
+  // videoWidth  — number, source video width
+  // videoHeight — number, source video height
 });
 ```
 
@@ -235,6 +262,8 @@ Emitted on any worker or processing error.
 ```javascript
 vc.on('error', ({ source, message }) => {
   console.error(`[${source}]`, message);
+  // source — string, e.g. 'rppg', 'emotion', 'gaze', 'eyeState',
+  //          'headpose', 'plot', 'emotionCalibration'
 });
 ```
 

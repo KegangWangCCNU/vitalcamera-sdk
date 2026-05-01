@@ -28,7 +28,7 @@ Create a file called `index.html`:
   <button id="startBtn">Start</button>
 
   <script type="module">
-    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.2.14/src/index.js';
+    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.5.0/src/index.js';
 
     const adapter = new BrowserAdapter({
       videoElement: document.getElementById('cam'),
@@ -101,6 +101,29 @@ adapter.vitalcamera.on('headpose', ({ yaw, pitch, roll }) => {
   console.log('Head pose:', yaw.toFixed(1), pitch.toFixed(1), roll.toFixed(1));
 });
 ```
+
+### Personalize emotion classification
+
+The default emotion baseline is tuned for Asian faces. For best per-user
+accuracy, pass 2+ neutral-expression photos:
+
+```javascript
+const adapter = new BrowserAdapter({
+  videoElement: document.getElementById('cam'),
+  emotionCalibration: {
+    images: [
+      'data:image/jpeg;base64,/9j/4AAQ...',  // load from <input type="file">
+      'data:image/jpeg;base64,/9j/4AAQ...',  // or anywhere else
+    ],
+  },
+});
+
+await adapter.init();   // calibration runs automatically here
+```
+
+Calibration is fully transparent — the `'emotion'` event payload is identical
+with or without it. See [Configuration → Emotion calibration](configuration.md#emotion-calibration)
+for the full details.
 
 ### Add HRV (Heart Rate Variability)
 
