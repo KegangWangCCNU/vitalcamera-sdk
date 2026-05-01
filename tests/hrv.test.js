@@ -233,3 +233,39 @@ describe('RealtimePeakDetector', () => {
         assert.deepEqual(det.recentIBIs, []);
     });
 });
+
+// ---------------------------------------------------------------------------
+// computeHrv  (one-shot pipeline used by both worker and direct callers)
+// ---------------------------------------------------------------------------
+import { computeHrv } from '../src/core/hrv.js';
+
+describe('computeHrv', () => {
+    it('returns null for too-short input', () => {
+        assert.equal(computeHrv([]), null);
+        assert.equal(computeHrv([{t:0,v:1},{t:33,v:0.5}]), null);
+    });
+
+    it('produces RMSSD/CV/confidence for a realistic 30 s window', () => {
+        const fs = 30, dur = 30, baseFreq = 1.2;
+        const samples = [];
+        let phase = 0;
+        for (let i = 0; i < fs * dur; i++) {
+            const t = i * (1000 / fs);
+            const f = baseFreq * (1 + 0.05 * Math.sin(t / 4000));
+            phase += 2 * Math.PI * f / fs;
+            samples.push({ t, v: Math.sin(phase) });
+        }
+        const r = computeHrv(samples);
+        assert.ok(r, 'should produce a result');
+        assert.ok(Number.isFinite(r.rmssd) && r.rmssd >= 0);
+        assert.ok(r.cv > 0 && r.cv < 0.25);
+        assert.ok(r.confidence >= 0 && r.confidence <= 1);
+    });
+
+    it('rejects pure noise', () => {
+        const samples = [];
+        for (let i = 0; i < 30 * 30; i++) samples.push({ t: i * 33.3, v: Math.random() });
+        const r = computeHrv(samples);
+        assert.equal(r, null);
+    });
+});

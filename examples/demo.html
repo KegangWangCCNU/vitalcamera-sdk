@@ -658,19 +658,6 @@ async function init() {
             overlayCtx.strokeStyle = 'rgba(201,100,66,0.75)';
             overlayCtx.lineWidth = 2;
             overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
-            // Eye crop boxes — green = open, gray = closed (uses last eyestate)
-            if (lastEyeBoxes) {
-                const draw = (b, isOpen) => {
-                    if (!b) return;
-                    overlayCtx.strokeStyle = isOpen ? 'rgba(80,180,100,0.85)' : 'rgba(120,120,120,0.85)';
-                    overlayCtx.lineWidth = 1.5;
-                    overlayCtx.strokeRect(b.x, b.y, b.w, b.h);
-                };
-                const lOpen = document.getElementById('eyePillLeft').classList.contains('open');
-                const rOpen = document.getElementById('eyePillRight').classList.contains('open');
-                draw(lastEyeBoxes.left,  lOpen);
-                draw(lastEyeBoxes.right, rOpen);
-            }
         }
         // Frame + FPS (matching original: count every face event, FPS every 30 frames)
         frameCount++;

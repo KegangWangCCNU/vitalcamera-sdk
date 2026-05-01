@@ -12,12 +12,14 @@
  * and peak frequency index.
  *
  * Message protocol (type / payload):
- *   -> init    { sqiBuffer, psdBuffer }  Load both models
- *   <- initDone                          Models ready
- *   -> run     { inputData }             Analyze a 450-sample BVP window
- *   <- result  { sqi, hr, freq, psd, peak, time }
- *   -> setMode { isLowPower }            Toggle low-power mode (throttles runs)
- *   <- error   { msg }                   On any thrown error
+ *   -> init     { sqiBuffer, psdBuffer }  Load both models
+ *   <- initDone                           Models ready
+ *   -> run      { inputData }             Analyze a 450-sample BVP window (HR/SQI)
+ *   <- result   { sqi, hr, freq, psd, peak, time }
+ *   -> hrv_run  { samples: [{t,v},…] }    Run HRV pipeline on a long window
+ *   <- hrv_result { rmssd, cv, confidence, time }   rmssd === null when gates fail
+ *   -> setMode  { isLowPower }            Toggle low-power mode (throttles runs)
+ *   <- error    { msg }                   On any thrown error
  */
 
 /* ── LiteRT runtime (loaded dynamically from CDN) ── */
@@ -32,12 +34,183 @@ let lowPowerMode = false;
 const INPUT_SHAPE = [1, 450];
 const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/wasm/';
 
+
+/* ── HRV pipeline (inlined from hrv.js so the worker is self-contained) ── */
+
+function _detectBvpPeaks(samples, minIbiMs = 333) {
+    const n = samples.length;
+    if (n < 6) return [];
+    let sum = 0;
+    for (const s of samples) sum += s.v;
+    const mean = sum / n;
+    let sumSq = 0;
+    for (const s of samples) { const d = s.v - mean; sumSq += d * d; }
+    const std = Math.sqrt(sumSq / n);
+    const thresh = mean + 0.3 * std;
+    const peaks = [];
+    for (let i = 2; i < n - 2; i++) {
+        const v = samples[i].v;
+        if (v > thresh
+            && v >= samples[i - 1].v && v >= samples[i + 1].v
+            && v >= samples[i - 2].v && v >= samples[i + 2].v) {
+            if (peaks.length === 0 || samples[i].t - samples[peaks[peaks.length - 1]].t >= minIbiMs) {
+                peaks.push(i);
+            } else if (v > samples[peaks[peaks.length - 1]].v) {
+                peaks[peaks.length - 1] = i;
+            }
+        }
+    }
+    return peaks;
+}
+
+function _detectBvpValleys(samples, minIbiMs = 333) {
+    const n = samples.length;
+    if (n < 6) return [];
+    let sum = 0;
+    for (const s of samples) sum += s.v;
+    const mean = sum / n;
+    let sumSq = 0;
+    for (const s of samples) { const d = s.v - mean; sumSq += d * d; }
+    const std = Math.sqrt(sumSq / n);
+    const thresh = mean - 0.3 * std;
+    const valleys = [];
+    for (let i = 2; i < n - 2; i++) {
+        const v = samples[i].v;
+        if (v < thresh
+            && v <= samples[i - 1].v && v <= samples[i + 1].v
+            && v <= samples[i - 2].v && v <= samples[i + 2].v) {
+            if (valleys.length === 0 || samples[i].t - samples[valleys[valleys.length - 1]].t >= minIbiMs) {
+                valleys.push(i);
+            } else if (v < samples[valleys[valleys.length - 1]].v) {
+                valleys[valleys.length - 1] = i;
+            }
+        }
+    }
+    return valleys;
+}
+
+function _rejectAbnormalPeaks(peaks, signalLike) {
+    if (peaks.length < 4) return peaks;
+    const amps = peaks.map(p => signalLike[p]);
+    const sorted = amps.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const deviations = amps.map(a => Math.abs(a - median));
+    const devSorted = deviations.slice().sort((a, b) => a - b);
+    const mad = devSorted[Math.floor(devSorted.length / 2)] || 1e-6;
+    return peaks.filter((_, i) => Math.abs(amps[i] - median) <= 3 * mad);
+}
+
+function _refineExtrema(idxs, samples, expectMax) {
+    const n = samples.length;
+    return idxs.map(i => {
+        if (i <= 0 || i >= n - 1) return samples[i].t;
+        const x0 = samples[i - 1].t, y0 = samples[i - 1].v;
+        const x1 = samples[i].t,     y1 = samples[i].v;
+        const x2 = samples[i + 1].t, y2 = samples[i + 1].v;
+        const denom = (x0 - x1) * (x0 - x2) * (x1 - x2);
+        if (Math.abs(denom) < 1e-12) return x1;
+        const a = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / denom;
+        const b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / denom;
+        if (Math.abs(a) < 1e-12) return x1;
+        if (expectMax && a > 0) return x1;
+        if (!expectMax && a < 0) return x1;
+        const xv = -b / (2 * a);
+        if (xv < x0 || xv > x2) return x1;
+        return xv;
+    });
+}
+
+function _quotientFilter(rr) {
+    if (rr.length < 3) return rr;
+    const out = [];
+    for (let i = 0; i < rr.length; i++) {
+        let ok = true;
+        if (i > 0) { const r = rr[i] / rr[i - 1]; if (r < 0.75 || r > 1.33) ok = false; }
+        if (i < rr.length - 1) { const r = rr[i] / rr[i + 1]; if (r < 0.75 || r > 1.33) ok = false; }
+        if (rr[i] < 300 || rr[i] > 2000) ok = false;
+        if (ok) out.push(rr[i]);
+    }
+    return out;
+}
+
+function _madFilter(rr) {
+    if (rr.length < 4) return rr;
+    const sorted = rr.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const deviations = rr.map(v => Math.abs(v - median));
+    const devSorted = deviations.slice().sort((a, b) => a - b);
+    const mad = devSorted[Math.floor(devSorted.length / 2)] || 1e-6;
+    return rr.filter((v) => (0.6745 * Math.abs(v - median) / mad) < 5);
+}
+
+/**
+ * Run the full HRV pipeline on the given timestamped samples.
+ * Mirror of computeHrv() in hrv.js.
+ */
+function _runHrv(samples) {
+    if (!samples || samples.length < 8) return null;
+    const n = samples.length;
+    const ampView = { length: n }, negAmpView = { length: n };
+    for (let i = 0; i < n; i++) { ampView[i] = samples[i].v; negAmpView[i] = -samples[i].v; }
+
+    let peaks = _detectBvpPeaks(samples);
+    if (peaks.length < 4) return null;
+    peaks = _rejectAbnormalPeaks(peaks, ampView);
+    if (peaks.length < 4) return null;
+    const peakTimes = _refineExtrema(peaks, samples, true);
+    const rrUpper = [];
+    for (let i = 1; i < peakTimes.length; i++) rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
+
+    // Valley sanity gate
+    let valleys = _detectBvpValleys(samples);
+    if (valleys.length >= 4) valleys = _rejectAbnormalPeaks(valleys, negAmpView);
+    if (valleys.length >= 4) {
+        const valleyTimes = _refineExtrema(valleys, samples, false);
+        const rrLower = [];
+        for (let i = 1; i < valleyTimes.length; i++) rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
+        if (Math.abs(rrUpper.length - rrLower.length) > 2) return null;
+        const mU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
+        const mL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
+        if (Math.abs(mU - mL) / mU > 0.05) return null;
+    }
+
+    const rrQ = _quotientFilter(rrUpper);
+    const rrF = _madFilter(rrQ);
+    if (rrF.length / rrUpper.length < 0.6) return null;
+    if (rrF.length < 6) return null;
+
+    const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
+    let varF = 0;
+    for (const r of rrF) varF += (r - meanF) ** 2;
+    const stdF = Math.sqrt(varF / rrF.length);
+    const cv = stdF / meanF;
+    if (cv < 0.005 || cv > 0.25) return null;
+
+    let sumSq = 0;
+    for (let i = 1; i < rrF.length; i++) { const d = rrF[i] - rrF[i - 1]; sumSq += d * d; }
+    const rmssd = Math.sqrt(sumSq / (rrF.length - 1));
+    const survival = rrF.length / rrUpper.length;
+    const cvHealthy = (cv >= 0.01 && cv <= 0.15) ? 1 : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
+    const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
+    return { rmssd, cv, confidence };
+}
+
 /* ── Message handler ── */
 self.onmessage = async (e) => {
     const { type, payload } = e.data;
     try {
         if (type === 'init') await handleInit(payload);
         else if (type === 'run') await handleRun(payload);
+        else if (type === 'hrv_run') {
+            const start = performance.now();
+            const result = _runHrv(payload.samples);
+            self.postMessage({
+                type: 'hrv_result',
+                payload: result === null
+                    ? { rmssd: null, time: performance.now() - start }
+                    : { ...result, time: performance.now() - start }
+            });
+        }
         else if (type === 'setMode') { lowPowerMode = payload.isLowPower; }
     } catch (err) {
         self.postMessage({ type: 'error', msg: err.toString() });

@@ -10,16 +10,6 @@
 
 import RealtimePeakDetector from './peak-detect.js';
 import { estimateHeadPose } from './headpose.js';
-import {
-    detectBvpPeaks,
-    detectBvpValleys,
-    rejectAbnormalPeaks,
-    refinePeaksParabolic,
-    refineValleysParabolic,
-    quotientFilterRR,
-    madFilterRR,
-    computeHrvMetrics,
-} from './hrv.js';
 import { createWorker } from '../workers/loader.js';
 
 // ---------------------------------------------------------------------------
@@ -172,9 +162,10 @@ class VitalCamera {
         // Peak detector
         this._peakDetector = new RealtimePeakDetector();
 
-        // BVP sample buffer for HRV
+        // BVP sample buffer for HRV (sent to PSD worker on a 1 Hz cadence —
+        // the worker owns the actual peak-detect / RMSSD / gate pipeline)
         this._bvpSamples = [];    // { t: ms, v: number }
-        this._lastHrvTime = 0;
+        this._lastHrvSendTime = 0;
 
         // BVP ring for PSD worker (450 samples)
         this._bvpRing = [];
@@ -402,6 +393,11 @@ class VitalCamera {
             return;
         }
 
+        if (type === 'hrv_result') {
+            this._onHrvResult(data.payload || data);
+            return;
+        }
+
         if (type !== 'result') return;
 
         // Workers send { type: 'result', payload: { ... } } — unwrap payload
@@ -473,18 +469,27 @@ class VitalCamera {
             });
         }
 
-        // Accumulate BVP samples for HRV (only if SQI is good enough)
+        // Accumulate BVP samples for HRV (only if SQI is good enough). The
+        // pipeline itself runs in the PSD worker so the main thread just
+        // throttles a postMessage every hrvUpdateInterval ms.
         if (this.config.enableHrv && this._lastSqi >= this.config.hrvSqiThreshold) {
             this._bvpSamples.push({ t: timestamp, v: value });
-
-            // Trim to sliding window (default 2 min)
             const maxMs = this.config.hrvMaxWindow * 1000;
             while (this._bvpSamples.length > 1 &&
                    timestamp - this._bvpSamples[0].t > maxMs) {
                 this._bvpSamples.shift();
             }
-
-            this._maybeComputeHrv(timestamp);
+            const since = timestamp - this._lastHrvSendTime;
+            const dur = this._bvpSamples.length > 1
+                ? (this._bvpSamples[this._bvpSamples.length - 1].t - this._bvpSamples[0].t) / 1000
+                : 0;
+            if (since >= this.config.hrvUpdateInterval && dur >= this.config.hrvMinDuration) {
+                this._lastHrvSendTime = timestamp;
+                this._postIfReady('psd', {
+                    type: 'hrv_run',
+                    payload: { samples: this._bvpSamples.slice() },
+                });
+            }
         }
     }
 
@@ -556,6 +561,22 @@ class VitalCamera {
     }
 
     /**
+     * Handle the HRV worker's result. The worker emits the same shape every
+     * tick — when the gates reject the window, rmssd is null and we simply
+     * skip the event.
+     * @private
+     */
+    _onHrvResult(data) {
+        if (!data || data.rmssd == null || !Number.isFinite(data.rmssd)) return;
+        this.emit('hrv', {
+            rmssd: data.rmssd,
+            cv: data.cv,
+            confidence: data.confidence,
+            timestamp: Date.now(),
+        });
+    }
+
+    /**
      * Handle OCEC eye-state result. Emits an `'eyestate'` event whose payload
      * shape is `{ left, right, bothClosed, time, timestamp }` where each side
      * carries `{ prob, open }` — `prob` is the raw sigmoid probability of
@@ -578,119 +599,6 @@ class VitalCamera {
             time,
             timestamp: Date.now(),
         });
-    }
-
-    // -----------------------------------------------------------------------
-    // HRV pipeline
-    // -----------------------------------------------------------------------
-
-    /**
-     * Run the HRV computation pipeline if enough time has passed.
-     * @private
-     */
-    _maybeComputeHrv(timestamp) {
-        if (timestamp - this._lastHrvTime < this.config.hrvUpdateInterval) return;
-
-        const duration = this._bvpSamples.length > 1
-            ? (this._bvpSamples[this._bvpSamples.length - 1].t - this._bvpSamples[0].t) / 1000
-            : 0;
-
-        if (duration < this.config.hrvMinDuration) return;
-
-        const hrv = this.computeHrvFromSamples(this._bvpSamples);
-        if (hrv) {
-            this._lastHrvTime = timestamp;
-            this.emit('hrv', {
-                rmssd: hrv.rmssd,
-                cv: hrv.cv,
-                confidence: hrv.confidence,
-                timestamp,
-            });
-        }
-    }
-
-    /**
-     * Run the full HRV pipeline on a set of BVP samples.
-     * Exposed publicly so it can be unit-tested without workers.
-     *
-     * @param {{ t: number, v: number }[]} samples
-     * @returns {{ rmssd: number } | null}
-     */
-    computeHrvFromSamples(samples) {
-        if (!samples || samples.length < 8) return null;
-
-        // ── Upper peaks (primary measurement) ────────────────────────────
-        const ampView = { length: samples.length };
-        const negAmpView = { length: samples.length };
-        for (let i = 0; i < samples.length; i++) {
-            ampView[i] = samples[i].v;
-            negAmpView[i] = -samples[i].v;
-        }
-
-        let peaks = detectBvpPeaks(samples);
-        if (peaks.length < 4) return null;
-        peaks = rejectAbnormalPeaks(peaks, ampView);
-        if (peaks.length < 4) return null;
-        const peakTimes = refinePeaksParabolic(peaks, samples);
-        const rrUpper = [];
-        for (let i = 1; i < peakTimes.length; i++) {
-            rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
-        }
-
-        // ── Confidence gates ─────────────────────────────────────────────
-        // Each gate checks one independent failure mode of the signal.
-
-        // Gate 1: Valley sanity — upper and lower should track the same
-        //   beats. Compare COUNTS (±2) and MEAN RR (±5%) only — pointwise
-        //   comparison is too noisy because valley parabolic fits jitter
-        //   more than peak fits (BVP descends slowly into a flat trough).
-        let valleys = detectBvpValleys(samples);
-        if (valleys.length >= 4) {
-            valleys = rejectAbnormalPeaks(valleys, negAmpView);
-        }
-        if (valleys.length >= 4) {
-            const valleyTimes = refineValleysParabolic(valleys, samples);
-            const rrLower = [];
-            for (let i = 1; i < valleyTimes.length; i++) {
-                rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
-            }
-            const countDiff = Math.abs(rrUpper.length - rrLower.length);
-            const meanU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
-            const meanL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
-            if (countDiff > 2) return null;
-            if (Math.abs(meanU - meanL) / meanU > 0.05) return null;
-        }
-
-        // Gate 2: Filter survival rate — if the quotient / MAD filters reject
-        //   more than 40 % of RRs, the signal is too unstable for a trustworthy
-        //   RMSSD. Common during motion, expression changes, model drift.
-        const rrQ = quotientFilterRR(rrUpper);
-        const rrF = madFilterRR(rrQ);
-        if (rrF.length / rrUpper.length < 0.6) return null;
-
-        // Gate 3: Coefficient-of-variation bounds — CV (= std(RR) / mean(RR))
-        //   for healthy short-term HRV sits in 1-15 %. Outside that, either
-        //   the signal lost beats (>15 %) or is artificially smoothed (<0.5 %).
-        const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
-        let varF = 0;
-        for (const r of rrF) varF += (r - meanF) ** 2;
-        const stdF = Math.sqrt(varF / rrF.length);
-        const cv = stdF / meanF;
-        if (cv < 0.005 || cv > 0.25) return null;
-
-        // ── Final RMSSD uses the upper peaks (peak fit > valley fit) ─────
-        const m = computeHrvMetrics(rrF);
-        if (!m) return null;
-
-        // Bundle a confidence score in [0, 1] alongside RMSSD so the UI can
-        // grey out / hide low-confidence updates if it wants.  Survival rate
-        // is the dominant signal; CV proximity to the healthy range adds a
-        // small modifier.
-        const survival   = rrF.length / rrUpper.length;        // 0.6-1.0 here
-        const cvHealthy  = (cv >= 0.01 && cv <= 0.15) ? 1.0
-                         : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
-        const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
-        return { ...m, cv, confidence };
     }
 
     // -----------------------------------------------------------------------

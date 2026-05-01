@@ -208,3 +208,66 @@ export function computeHrvMetrics(rrFiltered) {
     const rmssd = Math.sqrt(sumSq / diffs.length);
     return { rmssd };
 }
+
+/**
+ * One-shot HRV pipeline: detect peaks (and valleys for cross-validation),
+ * refine timing with parabolic fits on irregular samples, run the three
+ * confidence gates, and emit { rmssd, cv, confidence } or null when the
+ * window is too noisy / smooth / short.
+ *
+ * Pure function — same code lives inline inside psd.worker.js so the heavy
+ * compute doesn't run on the main thread. Exported here for direct callers
+ * (tests, custom pipelines).
+ *
+ * @param {{t:number, v:number}[]} samples
+ * @returns {{ rmssd:number, cv:number, confidence:number } | null}
+ */
+export function computeHrv(samples) {
+    if (!samples || samples.length < 8) return null;
+
+    const n = samples.length;
+    const ampView = { length: n }, negAmpView = { length: n };
+    for (let i = 0; i < n; i++) { ampView[i] = samples[i].v; negAmpView[i] = -samples[i].v; }
+
+    let peaks = detectBvpPeaks(samples);
+    if (peaks.length < 4) return null;
+    peaks = rejectAbnormalPeaks(peaks, ampView);
+    if (peaks.length < 4) return null;
+    const peakTimes = refinePeaksParabolic(peaks, samples);
+    const rrUpper = [];
+    for (let i = 1; i < peakTimes.length; i++) rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
+
+    // Gate 1: valley sanity (loose: count + mean only)
+    let valleys = detectBvpValleys(samples);
+    if (valleys.length >= 4) valleys = rejectAbnormalPeaks(valleys, negAmpView);
+    if (valleys.length >= 4) {
+        const valleyTimes = refineValleysParabolic(valleys, samples);
+        const rrLower = [];
+        for (let i = 1; i < valleyTimes.length; i++) rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
+        if (Math.abs(rrUpper.length - rrLower.length) > 2) return null;
+        const meanU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
+        const meanL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
+        if (Math.abs(meanU - meanL) / meanU > 0.05) return null;
+    }
+
+    // Gate 2: filter survival rate
+    const rrQ = quotientFilterRR(rrUpper);
+    const rrF = madFilterRR(rrQ);
+    if (rrF.length / rrUpper.length < 0.6) return null;
+
+    // Gate 3: CV bounds
+    const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
+    let varF = 0;
+    for (const r of rrF) varF += (r - meanF) ** 2;
+    const stdF = Math.sqrt(varF / rrF.length);
+    const cv = stdF / meanF;
+    if (cv < 0.005 || cv > 0.25) return null;
+
+    const m = computeHrvMetrics(rrF);
+    if (!m) return null;
+    const survival = rrF.length / rrUpper.length;
+    const cvHealthy = (cv >= 0.01 && cv <= 0.15) ? 1.0 : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
+    const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
+    return { rmssd: m.rmssd, cv, confidence };
+}
+
