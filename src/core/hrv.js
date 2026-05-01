@@ -210,6 +210,26 @@ export function computeHrvMetrics(rrFiltered) {
 }
 
 /**
+ * Drop RR intervals that sit too far from the in-window median. Catches
+ * gross outliers that the per-pair compensating filter doesn't see —
+ * e.g. a long stretch where peak detection consistently misses a beat
+ * (giving doubled RRs that drift in alone, with no neighbouring spike).
+ *
+ * Default tolerance is ±25 % of the median, matching the heartpy
+ * quotient filter's traditional 0.75–1.33 acceptance range.
+ *
+ * @param {number[]} rr   RR intervals, ms
+ * @param {number} [k=0.25]  Tolerance — keep RRs within (1±k)·median
+ * @returns {number[]}    Filtered RR intervals
+ */
+export function filterRROutliers(rr, k = 0.25) {
+    if (rr.length < 4) return rr.slice();
+    const sorted = rr.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return rr.filter(v => Math.abs(v - median) / median <= k);
+}
+
+/**
  * Filter compensating-pair RR artefacts. When peak detection mis-locates
  * a single peak by 1-2 frames, RR[i-1] and RR[i] swap mass — one too long,
  * one too short — so |RR[i] - RR[i-1]| spikes far above the typical
@@ -226,21 +246,37 @@ export function filterCompensatingPairs(rr) {
     const diffs = new Array(rr.length - 1);
     for (let i = 1; i < rr.length; i++) diffs[i - 1] = Math.abs(rr[i] - rr[i - 1]);
 
-    // Robust scale: median of the LOWER HALF of diffs.
-    // Using the full median makes the threshold scale up with the artefacts
-    // themselves (when many pairs are bad, their large diffs raise the
-    // median, hiding the artefacts behind it). The lower-half median tracks
-    // the real HRV scale instead.
+    // Robust scale: 25th-percentile of |ΔRR|; floor scales with mean RR (12 %)
     const sorted = diffs.slice().sort((a, b) => a - b);
-    const halfMed = sorted[Math.floor(sorted.length / 4)];   // 25th percentile
-    const threshold = Math.max(4 * halfMed, 150);            // floor 150 ms
+    const q1 = sorted[Math.floor(sorted.length / 4)];
+    let sumRR = 0; for (const v of rr) sumRR += v;
+    const meanRR = sumRR / rr.length;
+    const threshold = Math.max(4 * q1, 0.12 * meanRR);
+
+    // Median RR — used to decide which member of a flagged pair to drop.
+    // Without this, a clean→bad transition (e.g. 800→650) drops both 800
+    // and 650 even though only the 650 is wrong, cascading the rejection
+    // outward from a single artefact.
+    const sortedRR = rr.slice().sort((a, b) => a - b);
+    const medianRR = sortedRR[Math.floor(sortedRR.length / 2)];
+    const NEAR_MED = 0.05;     // within 5 % of median = "fine"
+    const offMed = v => Math.abs(v - medianRR) / medianRR;
 
     const keep = new Array(rr.length).fill(true);
     for (let i = 1; i < rr.length; i++) {
         if (diffs[i - 1] > threshold) {
-            // Either RR[i-1] or RR[i] is corrupted — drop both
-            keep[i - 1] = false;
-            keep[i] = false;
+            const offPrev = offMed(rr[i - 1]);
+            const offCur  = offMed(rr[i]);
+            if (offPrev > NEAR_MED && offCur > NEAR_MED) {
+                // Both off-median → genuine compensating pair → drop both
+                keep[i - 1] = false;
+                keep[i] = false;
+            } else if (offPrev > offCur) {
+                // Only the previous one is off → that's the artefact
+                keep[i - 1] = false;
+            } else {
+                keep[i] = false;
+            }
         }
     }
     const out = [];
@@ -271,8 +307,12 @@ export function computeHrv(samples) {
     const rrPhys = rrRaw.filter(v => v >= 300 && v <= 2000);
     if (rrPhys.length < 5) return null;
 
-    // The only outlier-rejection layer
-    const rrClean = filterCompensatingPairs(rrPhys);
+    // Two-stage outlier rejection:
+    //   1. drop RRs >25 % from the in-window median (gross drift / missed beats)
+    //   2. drop compensating pairs where |ΔRR| > scale-aware threshold
+    const rrInRange = filterRROutliers(rrPhys);
+    if (rrInRange.length < 5) return null;
+    const rrClean = filterCompensatingPairs(rrInRange);
     if (rrClean.length < 5) return null;
 
     // RMSSD — root-mean-square of successive RR differences (short-term HRV)

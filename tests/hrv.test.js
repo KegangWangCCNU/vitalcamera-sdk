@@ -239,7 +239,7 @@ describe('RealtimePeakDetector', () => {
 // ---------------------------------------------------------------------------
 import { computeHrv } from '../src/core/hrv.js';
 
-import { filterCompensatingPairs } from '../src/core/hrv.js';
+import { filterCompensatingPairs, filterRROutliers } from '../src/core/hrv.js';
 
 describe('computeHrv', () => {
     it('returns null for too-short input', () => {
@@ -263,6 +263,24 @@ describe('computeHrv', () => {
         assert.ok(Number.isFinite(r.sdnn) && r.sdnn >= 0);
         assert.ok(Number.isFinite(r.meanRR) && r.meanRR > 0);
         assert.ok(typeof r.n === 'number' && r.n > 4);
+    });
+});
+
+describe('filterRROutliers', () => {
+    it('keeps RRs within ±25 % of median', () => {
+        const rr = [800, 810, 790, 825, 795, 805];
+        assert.deepEqual(filterRROutliers(rr), rr);
+    });
+    it('drops a doubled RR (missed beat)', () => {
+        const rr = [800, 800, 810, 1600, 800, 790, 800];
+        const out = filterRROutliers(rr);
+        assert.ok(!out.includes(1600));
+        assert.ok(out.length === 6);
+    });
+    it('drops a halved RR (extra peak)', () => {
+        const rr = [800, 810, 400, 800, 790, 805];
+        const out = filterRROutliers(rr);
+        assert.ok(!out.includes(400));
     });
 });
 

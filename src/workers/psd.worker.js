@@ -147,17 +147,36 @@ function _madFilter(rr) {
  * Run the full HRV pipeline on the given timestamped samples.
  * Mirror of computeHrv() in hrv.js.
  */
+function _filterRROutliers(rr, k = 0.25) {
+    if (rr.length < 4) return rr.slice();
+    const sorted = rr.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return rr.filter(v => Math.abs(v - median) / median <= k);
+}
+
 function _filterCompensatingPairs(rr) {
     if (rr.length < 4) return rr.slice();
     const diffs = new Array(rr.length - 1);
     for (let i = 1; i < rr.length; i++) diffs[i - 1] = Math.abs(rr[i] - rr[i - 1]);
-    // Robust scale: lower-quartile diff (artefacts inflate the upper half)
     const sorted = diffs.slice().sort((a, b) => a - b);
-    const halfMed = sorted[Math.floor(sorted.length / 4)];
-    const threshold = Math.max(4 * halfMed, 150);
+    const q1 = sorted[Math.floor(sorted.length / 4)];
+    let sumRR = 0; for (const v of rr) sumRR += v;
+    const meanRR = sumRR / rr.length;
+    const threshold = Math.max(4 * q1, 0.12 * meanRR);
+
+    const sortedRR = rr.slice().sort((a, b) => a - b);
+    const medianRR = sortedRR[Math.floor(sortedRR.length / 2)];
+    const NEAR_MED = 0.05;
+    const offMed = v => Math.abs(v - medianRR) / medianRR;
+
     const keep = new Array(rr.length).fill(true);
     for (let i = 1; i < rr.length; i++) {
-        if (diffs[i - 1] > threshold) { keep[i - 1] = false; keep[i] = false; }
+        if (diffs[i - 1] > threshold) {
+            const oP = offMed(rr[i - 1]), oC = offMed(rr[i]);
+            if (oP > NEAR_MED && oC > NEAR_MED) { keep[i - 1] = false; keep[i] = false; }
+            else if (oP > oC) keep[i - 1] = false;
+            else keep[i] = false;
+        }
     }
     const out = [];
     for (let i = 0; i < rr.length; i++) if (keep[i]) out.push(rr[i]);
@@ -178,9 +197,15 @@ function _runHrv(samples, dbg) {
     dbg.rrPhys = rrPhys.length;
     if (rrPhys.length < 5) { dbg.reject = 'rr_below_phys_min'; return null; }
 
-    const rrClean = _filterCompensatingPairs(rrPhys);
+    // Stage 1: drop RRs >25 % from window median (gross missed-beat outliers)
+    const rrInRange = _filterRROutliers(rrPhys);
+    dbg.rrInRange = rrInRange.length;
+    if (rrInRange.length < 5) { dbg.reject = 'too_few_after_outlier_filter'; return null; }
+
+    // Stage 2: drop compensating pairs (per-pair |ΔRR| spike)
+    const rrClean = _filterCompensatingPairs(rrInRange);
     dbg.rrClean = rrClean.length;
-    dbg.dropped = rrPhys.length - rrClean.length;
+    dbg.droppedTotal = rrPhys.length - rrClean.length;
     if (rrClean.length < 5) { dbg.reject = 'too_few_after_compensating_pairs'; return null; }
 
     let sumSqDiff = 0;
