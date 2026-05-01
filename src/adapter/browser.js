@@ -246,6 +246,10 @@ export default class BrowserAdapter {
         this._kfBoxW = null;
         this._kfBoxH = null;
 
+        /** @private Kalman filters for eye crop boxes (left, right × x,y,w,h) — same defaults as face box */
+        this._kfEyeLX = null; this._kfEyeLY = null; this._kfEyeLW = null; this._kfEyeLH = null;
+        this._kfEyeRX = null; this._kfEyeRY = null; this._kfEyeRW = null; this._kfEyeRH = null;
+
         /** @private 30fps frame throttle (matching original FacePhys) */
         this._frameInterval = 1000 / 30;
 
@@ -614,6 +618,8 @@ export default class BrowserAdapter {
             // No face — still emit so UI can hide overlay
             this._kfBoxX = null; this._kfBoxY = null;
             this._kfBoxW = null; this._kfBoxH = null;
+            this._kfEyeLX = null; this._kfEyeLY = null; this._kfEyeLW = null; this._kfEyeLH = null;
+            this._kfEyeRX = null; this._kfEyeRY = null; this._kfEyeRW = null; this._kfEyeRH = null;
             this._vs?.emit('face', {
                 detected: false,
                 box: null,
@@ -688,8 +694,27 @@ export default class BrowserAdapter {
             const dy = keypoints[0].y - keypoints[1].y;
             const iod = Math.hypot(dx, dy);
             if (iod > 4) {
-                const rightBox = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
-                const leftBox  = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
+                const rawR = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
+                const rawL = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
+                // Kalman-filter both eye boxes — same defaults as the face box for visual consistency
+                let rightBox, leftBox;
+                if (!this._kfEyeLX) {
+                    this._kfEyeLX = new KalmanFilter1D(rawL.x); this._kfEyeLY = new KalmanFilter1D(rawL.y);
+                    this._kfEyeLW = new KalmanFilter1D(rawL.w); this._kfEyeLH = new KalmanFilter1D(rawL.h);
+                    this._kfEyeRX = new KalmanFilter1D(rawR.x); this._kfEyeRY = new KalmanFilter1D(rawR.y);
+                    this._kfEyeRW = new KalmanFilter1D(rawR.w); this._kfEyeRH = new KalmanFilter1D(rawR.h);
+                    leftBox  = { ...rawL };
+                    rightBox = { ...rawR };
+                } else {
+                    leftBox = {
+                        x: this._kfEyeLX.update(rawL.x), y: this._kfEyeLY.update(rawL.y),
+                        w: this._kfEyeLW.update(rawL.w), h: this._kfEyeLH.update(rawL.h),
+                    };
+                    rightBox = {
+                        x: this._kfEyeRX.update(rawR.x), y: this._kfEyeRY.update(rawR.y),
+                        w: this._kfEyeRW.update(rawR.w), h: this._kfEyeRH.update(rawR.h),
+                    };
+                }
                 if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
                     frameInput.eyeRightInput = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
                     frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
