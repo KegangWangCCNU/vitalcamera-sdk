@@ -137,7 +137,10 @@ export function madFilterRR(rr) {
     const deviations = rr.map(v => Math.abs(v - median));
     const devSorted = deviations.slice().sort((a, b) => a - b);
     const mad = devSorted[Math.floor(devSorted.length / 2)] || 1e-6;
-    return rr.filter((v) => (0.6745 * Math.abs(v - median) / mad) < 3.5);
+    // Use 5 instead of the textbook 3.5 — at 30 Hz BVP the parabolic
+    // refinement is precise enough that a 3.5 cutoff over-prunes
+    // genuine short-term variability and collapses RMSSD to <1 ms.
+    return rr.filter((v) => (0.6745 * Math.abs(v - median) / mad) < 5);
 }
 
 /**
@@ -146,10 +149,10 @@ export function madFilterRR(rr) {
  * @returns {{ rmssd: number } | null}
  */
 export function computeHrvMetrics(rrFiltered) {
-    if (rrFiltered.length < 3) return null;
+    if (rrFiltered.length < 6) return null;          // need ≥ 5 diffs for a stable RMSSD
     const diffs = [];
     for (let i = 1; i < rrFiltered.length; i++) diffs.push(rrFiltered[i] - rrFiltered[i - 1]);
-    if (diffs.length < 2) return null;
+    if (diffs.length < 5) return null;
     let sumSq = 0;
     for (const d of diffs) sumSq += d * d;
     const rmssd = Math.sqrt(sumSq / diffs.length);

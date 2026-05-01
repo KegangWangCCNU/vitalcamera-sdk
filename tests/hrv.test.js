@@ -172,19 +172,22 @@ describe('madFilterRR', () => {
 // computeHrvMetrics
 // ---------------------------------------------------------------------------
 describe('computeHrvMetrics', () => {
-    it('returns null for fewer than 3 intervals', () => {
+    it('returns null for fewer than 6 intervals', () => {
         assert.equal(computeHrvMetrics([800, 810]), null);
+        assert.equal(computeHrvMetrics([800, 810, 790, 805, 815]), null);
     });
 
     it('computes correct RMSSD for known input', () => {
-        const result = computeHrvMetrics([800, 810, 790, 805]);
+        // 6 RRs → 5 diffs: [10, -20, 15, 0, -5]
+        // sumSq = 100 + 400 + 225 + 0 + 25 = 750
+        const result = computeHrvMetrics([800, 810, 790, 805, 805, 800]);
         assert.ok(result);
-        const expected = Math.sqrt(725 / 3);
+        const expected = Math.sqrt(750 / 5);
         assert.ok(Math.abs(result.rmssd - expected) < 1e-6);
     });
 
     it('returns RMSSD=0 for constant intervals', () => {
-        const result = computeHrvMetrics([800, 800, 800, 800]);
+        const result = computeHrvMetrics([800, 800, 800, 800, 800, 800]);
         assert.ok(result);
         assert.ok(Math.abs(result.rmssd) < 1e-10);
     });
