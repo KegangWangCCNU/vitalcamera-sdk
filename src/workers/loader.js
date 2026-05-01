@@ -53,7 +53,11 @@ export async function createWorker(name, basePath) {
 
     let code = _sourceCache.get(name);
     if (!code) {
-        const resp = await fetch(url);
+        // cache: 'no-cache' forces revalidation — without this, browsers can
+        // hold on to stale worker source even across hard refreshes (the worker
+        // is loaded via fetch + Blob URL, not <script>, so Ctrl+Shift+R doesn't
+        // bust the cache for it).
+        const resp = await fetch(url, { cache: 'no-cache' });
         if (!resp.ok) {
             throw new Error(
                 `[VitalCamera] Failed to load worker "${name}" from ${url} (${resp.status})`
