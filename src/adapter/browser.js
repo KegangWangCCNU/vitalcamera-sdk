@@ -35,6 +35,16 @@ const IMAGENET_STD  = [0.229, 0.224, 0.225];
 const RPPG_SIZE    = 36;
 const EMOTION_SIZE = 224;
 const GAZE_SIZE    = 448;
+const EYE_W        = 40;   // OCEC input width  (matches model)
+const EYE_H        = 24;   // OCEC input height (matches model)
+
+/**
+ * Eye crop width as a fraction of face bounding-box width. The OCEC author
+ * reports real-world eye widths of ~15-22 px on a typical face — for a face
+ * of width W, an eye box of 0.30 * W gives a generous margin around the
+ * eye while staying well within model tolerance.
+ */
+const EYE_BOX_WFRAC = 0.30;
 
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
@@ -80,6 +90,30 @@ function cropAndResize(ctx, box, targetW, targetH, normalize = 'imagenet') {
     }
 
     return out;
+}
+
+/**
+ * Build an axis-aligned eye crop box centered on a keypoint, sized as a
+ * fraction of the face bounding-box width. The 5:3 aspect ratio matches
+ * the OCEC model (40 wide × 24 high).
+ *
+ * @param {{x:number,y:number}} kp     Eye keypoint in pixel coordinates
+ * @param {number} faceW               Face bounding-box width (px)
+ * @param {number} canvasW
+ * @param {number} canvasH
+ * @returns {{x:number,y:number,w:number,h:number}}
+ */
+function eyeBoxFromKeypoint(kp, faceW, canvasW, canvasH) {
+    const w = faceW * EYE_BOX_WFRAC;
+    const h = w * (EYE_H / EYE_W);
+    let x = kp.x - w / 2;
+    let y = kp.y - h / 2;
+    let bw = w, bh = h;
+    if (x < 0) { bw += x; x = 0; }
+    if (y < 0) { bh += y; y = 0; }
+    if (x + bw > canvasW) bw = canvasW - x;
+    if (y + bh > canvasH) bh = canvasH - y;
+    return { x, y, w: bw, h: bh };
 }
 
 /**
@@ -196,11 +230,13 @@ export default class BrowserAdapter {
         /** @private frame counter for sub-sampling emotion/gaze */
         this._frameCount = 0;
 
-        /** @private time-based throttle for emotion/gaze workers */
+        /** @private time-based throttle for emotion/gaze/eye-state workers */
         this._lastEmotionTime = 0;
         this._lastGazeTime = 0;
+        this._lastEyeStateTime = 0;
         this._emotionInterval = 500;  // ms — match original FacePhys
         this._gazeInterval = 200;     // ms
+        this._eyeStateInterval = 100; // ms — 10 Hz, fast enough for blinks
 
         /** @private Kalman filters for face bounding box (x, y, w, h) */
         this._kfBoxX = null;
@@ -402,6 +438,7 @@ export default class BrowserAdapter {
      * - `'hrv'`       — { rmssd, timestamp }
      * - `'emotion'`   — { emotion, probs, timestamp }
      * - `'gaze'`      — { yaw, pitch, timestamp }
+     * - `'eyestate'`  — { left:{prob,open}, right:{prob,open}, bothClosed, timestamp }
      * - `'headpose'`  — { yaw, pitch, roll, normal, timestamp }
      * - `'beat'`      — { ibi, timestamp }
      * - `'ready'`     — {}
@@ -645,6 +682,26 @@ export default class BrowserAdapter {
             frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');
         }
 
+        // Eye-state (time-based throttle, default 100ms = 10 Hz).
+        // BlazeFace short-range keypoint order:
+        //   [0]=right_eye, [1]=left_eye  — names from the *subject's* perspective.
+        // We pass the boxes in canonical "left/right of subject" order; the
+        // event payload uses the same convention.
+        if (this._models.eyeState
+            && keypoints && keypoints.length >= 2
+            && (now - this._lastEyeStateTime > this._eyeStateInterval)) {
+            this._lastEyeStateTime = now;
+            const rightBox = eyeBoxFromKeypoint(keypoints[0], box.w, w, h);
+            const leftBox  = eyeBoxFromKeypoint(keypoints[1], box.w, w, h);
+            // Skip if either crop would be empty (e.g. eye outside frame)
+            if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
+                frameInput.eyeRightInput = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
+                frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
+                // Boxes are exposed via _lastEyeBoxes for overlay drawing
+                this._lastEyeBoxes = { left: leftBox, right: rightBox };
+            }
+        }
+
         // Feed to core
         try {
             this._vs?.processFrame(frameInput);
@@ -718,6 +775,7 @@ export default class BrowserAdapter {
         state:        'state.gz',
         emotion:      'enet_b0_8_best_vgaf_dynamic_int8.tflite',
         gaze:         'mobileone_s0_gaze_float16.tflite',
+        eyeState:     'ocec_p.tflite',
         faceDetector: 'blaze_face_short_range.tflite',
     };
 
@@ -727,14 +785,16 @@ export default class BrowserAdapter {
      * @param {Object} [options]
      * @param {boolean} [options.emotion=true]  Load the emotion model.
      * @param {boolean} [options.gaze=true]     Load the gaze model.
+     * @param {boolean} [options.eyeState=true] Load the OCEC eye open/closed model.
      * @returns {Promise<Object>} Model buffers ready for VitalCamera.
      */
     static async loadModels(basePath = './models/', options = {}) {
-        const { emotion = true, gaze = true } = options;
+        const { emotion = true, gaze = true, eyeState = true } = options;
         const base = basePath.endsWith('/') ? basePath : basePath + '/';
         const keys = ['rppg', 'rppgProj', 'sqi', 'psd', 'state'];
         if (emotion) keys.push('emotion');
         if (gaze) keys.push('gaze');
+        if (eyeState) keys.push('eyeState');
 
         const buffers = {};
         await Promise.all(keys.map(async (key) => {

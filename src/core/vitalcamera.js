@@ -55,6 +55,7 @@ const DEFAULTS = {
     workerBasePath: null,     // null = auto (fetch from SDK URL + Blob URL)
     enableEmotion: true,
     enableGaze: true,
+    enableEyeState: true,
     enableHeadPose: true,
     enableHrv: true,
     hrvTargetFs: 200,
@@ -64,6 +65,7 @@ const DEFAULTS = {
     hrvSqiThreshold: 0.6,     // only accumulate BVP samples with SQI above this
     sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
+    eyeStateThreshold: 0.5,   // p(open) >= threshold → "open"
 };
 
 
@@ -132,9 +134,11 @@ class VitalCamera {
      * @param {ArrayBuffer} config.models.psd
      * @param {ArrayBuffer} [config.models.emotion]
      * @param {ArrayBuffer} [config.models.gaze]
+     * @param {ArrayBuffer} [config.models.eyeState]
      * @param {string}  [config.workerBasePath='./workers/']
      * @param {boolean} [config.enableEmotion=true]
      * @param {boolean} [config.enableGaze=true]
+     * @param {boolean} [config.enableEyeState=true]
      * @param {boolean} [config.enableHeadPose=true]
      * @param {boolean} [config.enableHrv=true]
      * @param {number}  [config.hrvTargetFs=200]
@@ -144,6 +148,7 @@ class VitalCamera {
      * @param {number}  [config.hrvSqiThreshold=0.6]      Min SQI to accept BVP sample for HRV
      * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
+     * @param {number}  [config.eyeStateThreshold=0.5]    p(open) >= threshold → "open"
      */
     constructor(config = {}) {
         // Mix in EventEmitter
@@ -227,6 +232,9 @@ class VitalCamera {
         if (this.config.enableGaze && this.models.gaze) {
             workerNames.push('gaze');
         }
+        if (this.config.enableEyeState && this.models.eyeState) {
+            workerNames.push('eye_state');
+        }
 
         const initPromises = workerNames.map(async (name) => {
             try {
@@ -304,12 +312,15 @@ class VitalCamera {
      * @param {number}        frame.timestamp     ms timestamp
      * @param {Float32Array}  [frame.emotionInput] [1,224,224,3]
      * @param {Float32Array}  [frame.gazeInput]    [1,448,448,3]
+     * @param {Float32Array}  [frame.eyeLeftInput]   [1,24,40,3]  RGB/255, no mean/std
+     * @param {Float32Array}  [frame.eyeRightInput]  [1,24,40,3]  RGB/255, no mean/std
      * @param {Array}         [frame.faceKeypoints] 6 BlazeFace keypoints
      */
     processFrame(frame) {
         if (!this.isRunning) return;
 
-        const { rppgInput, dtVal, timestamp, emotionInput, gazeInput, faceKeypoints } = frame;
+        const { rppgInput, dtVal, timestamp, emotionInput, gazeInput,
+                eyeLeftInput, eyeRightInput, faceKeypoints } = frame;
 
         // Track smoothed dt for HR formula correction
         if (dtVal > 0) this._dval = dtVal;
@@ -333,6 +344,14 @@ class VitalCamera {
             this._postIfReady('gaze', {
                 type: 'run',
                 payload: { imgData: gazeInput },
+            });
+        }
+
+        // Dispatch to eye-state worker (both eyes per call)
+        if (this.config.enableEyeState && eyeLeftInput && eyeRightInput && this._workers.eye_state) {
+            this._postIfReady('eye_state', {
+                type: 'run',
+                payload: { left: eyeLeftInput, right: eyeRightInput },
             });
         }
 
@@ -393,6 +412,9 @@ class VitalCamera {
                 break;
             case 'gaze':
                 this._onGazeResult(payload);
+                break;
+            case 'eye_state':
+                this._onEyeStateResult(payload);
                 break;
         }
     }
@@ -526,6 +548,29 @@ class VitalCamera {
         this.emit('gaze', gazeEvent);
     }
 
+    /**
+     * Handle OCEC eye-state result. Emits an `'eyestate'` event whose payload
+     * shape is `{ left, right, bothClosed, time, timestamp }` where each side
+     * carries `{ prob, open }` — `prob` is the raw sigmoid probability of
+     * being open and `open` is the boolean decision against
+     * `config.eyeStateThreshold`.
+     * @private
+     */
+    _onEyeStateResult(data) {
+        const { leftProb, rightProb, time } = data;
+        if (leftProb == null || rightProb == null) return;
+        const t = this.config.eyeStateThreshold;
+        const left  = { prob: leftProb,  open: leftProb  >= t };
+        const right = { prob: rightProb, open: rightProb >= t };
+        this.emit('eyestate', {
+            left,
+            right,
+            bothClosed: !left.open && !right.open,
+            time,
+            timestamp: Date.now(),
+        });
+    }
+
     // -----------------------------------------------------------------------
     // HRV pipeline
     // -----------------------------------------------------------------------
@@ -623,6 +668,12 @@ class VitalCamera {
                 worker.postMessage({
                     type: 'init',
                     payload: { modelBuffer: this.models.gaze },
+                });
+                break;
+            case 'eye_state':
+                worker.postMessage({
+                    type: 'init',
+                    payload: { modelBuffer: this.models.eyeState },
                 });
                 break;
         }

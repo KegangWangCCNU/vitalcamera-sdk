@@ -19,6 +19,7 @@ const WORKER_FILES = {
     psd:       'psd.worker.js',
     emotion:   'emotion.worker.js',
     gaze:      'gaze.worker.js',
+    eye_state: 'eye_state.worker.js',
     plot:      'plot.worker.js',
 };
 
@@ -31,7 +32,7 @@ const _sourceCache = new Map();
 /**
  * Create a Web Worker by name.
  *
- * @param {string} name   Worker name: 'inference' | 'psd' | 'emotion' | 'gaze' | 'plot'
+ * @param {string} name   Worker name: 'inference' | 'psd' | 'emotion' | 'gaze' | 'eye_state' | 'plot'
  * @param {string} [basePath]  Optional explicit path to worker files.
  *        If provided, uses traditional `new Worker(basePath + file)`.
  *        If omitted, fetches the worker source from the SDK's own URL

@@ -10,6 +10,7 @@ Browser-based real-time physiological sensing — extract heart rate, HRV, emoti
 - **HRV** — RMSSD and other heart rate variability metrics from BVP peak detection
 - **Emotion** — 8-class facial emotion recognition (EfficientNet-B0)
 - **Gaze** — yaw/pitch eye direction estimation (MobileOne-S0)
+- **Eye State** — per-eye open/closed classification + blink (OCEC, 112 KB)
 - **Head Pose** — yaw/pitch/roll from MediaPipe face landmarks
 - **Pure browser** — runs entirely client-side with Web Workers and TFLite/LiteRT
 
@@ -133,6 +134,7 @@ BrowserAdapter (optional)
 | `hrv` | `{ rmssd, sdnn, meanRR }` | ~1/s |
 | `emotion` | `{ label, probs, logits }` | 2/s |
 | `gaze` | `{ yaw, pitch }` | 5/s |
+| `eyestate` | `{ left:{prob,open}, right:{prob,open}, bothClosed }` | 10/s |
 | `headpose` | `{ yaw, pitch, roll, normal }` | 30/s |
 | `face` | `{ box, keypoints, videoWidth, videoHeight }` | 30/s |
 | `error` | `{ message }` | on error |
@@ -149,6 +151,7 @@ Models are **included** in the npm package and git repository under `models/`. T
 | psd | `psd_model.tflite` | Power spectral density |
 | emotion | `enet_b0_8_*.tflite` | Emotion classification (optional) |
 | gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional) |
+| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional, ~112 KB) |
 
 ## Citations
 
@@ -221,10 +224,4 @@ By using or distributing this software, you agree to the following additional te
 
 1. **Strict Local Processing** — All biometric inference must be performed on the local device. You must NOT transmit user video feeds or physiological metrics to any external server.
 2. **Consent Requirement** — You shall not use this Software to collect physiological data from any individual without their explicit consent.
-3. **No Backdoors** — Redistributions must maintain these local-processing guarantees.
-
-See [NOTICE](./NOTICE) for full third-party attribution.
-
----
-
-*This SDK was built with the assistance of [Claude Code](https://claude.ai/code) by Anthropic.*
+3. **No Backdoors*
