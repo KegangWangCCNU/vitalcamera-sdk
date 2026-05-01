@@ -44,11 +44,11 @@ const EYE_H        = 24;   // OCEC input height (matches model)
  * Why inter-eye distance and not face-bbox width: the BlazeFace face box can be
  * loose (especially with hair / fringe), making `face.w * fraction` unreliable.
  * Inter-eye distance is anatomically tight: a human eye width is roughly
- * 0.45 * inter-eye-distance, so 0.50 leaves a small margin while keeping the
- * eye filling most of the 40x24 OCEC input — which is what the model was
- * trained on (tight eye crops from a wholebody detector).
+ * 0.45 * inter-eye-distance, so 0.55 gives a small margin around the outer
+ * canthi while keeping the eye filling most of the 40x24 OCEC input — which
+ * is what the model was trained on (tight eye crops from a wholebody detector).
  */
-const EYE_BOX_WFRAC_IOD = 0.50;
+const EYE_BOX_WFRAC_IOD = 0.55;
 
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
