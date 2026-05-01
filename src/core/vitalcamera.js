@@ -65,7 +65,8 @@ const DEFAULTS = {
     hrvSqiThreshold: 0.6,     // only accumulate BVP samples with SQI above this
     sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
-    eyeStateThreshold: 0.7,   // p(open) >= threshold → "open" (0.7: stricter, fewer false-open during partial closure)
+    eyeStateThreshold: 0.5,         // p(open) >= threshold → "open" (used for the public 0/1 flag + display)
+    gazeEyeOpenGateProb: 0.7,       // skip gaze inference unless max(L,R) eye-open prob ≥ this
 };
 
 
@@ -148,7 +149,8 @@ class VitalCamera {
      * @param {number}  [config.hrvSqiThreshold=0.6]      Min SQI to accept BVP sample for HRV
      * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
-     * @param {number}  [config.eyeStateThreshold=0.7]    p(open) >= threshold → "open"
+     * @param {number}  [config.eyeStateThreshold=0.5]    p(open) >= threshold → "open" (display flag)
+     * @param {number}  [config.gazeEyeOpenGateProb=0.7]  Skip gaze inference unless max(L,R) eye-open prob ≥ this
      */
     constructor(config = {}) {
         // Mix in EventEmitter
@@ -195,6 +197,11 @@ class VitalCamera {
 
         // Last accepted gaze result (used when current frame is filtered out)
         this._lastGaze = null;
+
+        // Latest eye-state probabilities (raw sigmoid). Updated every frame and
+        // consumed by the adapter to gate gaze inference when both eyes are closed.
+        // null until the first eye-state result arrives.
+        this._lastEyeState = null;  // { leftProb, rightProb, timestamp }
     }
 
     // -----------------------------------------------------------------------
@@ -559,6 +566,8 @@ class VitalCamera {
     _onEyeStateResult(data) {
         const { leftProb, rightProb, time } = data;
         if (leftProb == null || rightProb == null) return;
+        // Cache for adapter-side consumers (e.g. gaze gating)
+        this._lastEyeState = { leftProb, rightProb, timestamp: Date.now() };
         const t = this.config.eyeStateThreshold;
         const left  = { prob: leftProb,  open: leftProb  >= t };
         const right = { prob: rightProb, open: rightProb >= t };

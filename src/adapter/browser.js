@@ -230,13 +230,11 @@ export default class BrowserAdapter {
         /** @private frame counter for sub-sampling emotion/gaze */
         this._frameCount = 0;
 
-        /** @private time-based throttle for emotion/gaze/eye-state workers */
+        /** @private time-based throttle for emotion/gaze workers (eye-state runs every frame, cost is ~0.3 ms) */
         this._lastEmotionTime = 0;
         this._lastGazeTime = 0;
-        this._lastEyeStateTime = 0;
         this._emotionInterval = 500;  // ms — match original FacePhys
         this._gazeInterval = 200;     // ms
-        this._eyeStateInterval = 100; // ms — 10 Hz, fast enough for blinks
 
         /** @private Kalman filters for face bounding box (x, y, w, h) */
         this._kfBoxX = null;
@@ -675,22 +673,12 @@ export default class BrowserAdapter {
             frameInput.emotionInput = cropAndResize(ctx, emotionBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
         }
 
-        // Gaze (time-based throttle, default 200ms)
-        if (this._models.gaze && (now - this._lastGazeTime > this._gazeInterval)) {
-            this._lastGazeTime = now;
-            const gazeBox = padBox(box, w, h, 0.2);
-            frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');
-        }
-
-        // Eye-state (time-based throttle, default 100ms = 10 Hz).
+        // Eye-state (every frame — single forward pass per eye is ~0.3 ms).
         // BlazeFace short-range keypoint order:
         //   [0]=right_eye, [1]=left_eye  — names from the *subject's* perspective.
         // We pass the boxes in canonical "left/right of subject" order; the
         // event payload uses the same convention.
-        if (this._models.eyeState
-            && keypoints && keypoints.length >= 2
-            && (now - this._lastEyeStateTime > this._eyeStateInterval)) {
-            this._lastEyeStateTime = now;
+        if (this._models.eyeState && keypoints && keypoints.length >= 2) {
             const rightBox = eyeBoxFromKeypoint(keypoints[0], box.w, w, h);
             const leftBox  = eyeBoxFromKeypoint(keypoints[1], box.w, w, h);
             // Skip if either crop would be empty (e.g. eye outside frame)
@@ -699,6 +687,21 @@ export default class BrowserAdapter {
                 frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
                 // Boxes are exposed via _lastEyeBoxes for overlay drawing
                 this._lastEyeBoxes = { left: leftBox, right: rightBox };
+            }
+        }
+
+        // Gaze (5 Hz throttle, gated by eye-state — when both eyes have p(open) <
+        // gazeEyeOpenGateProb (default 0.7) we skip the inference entirely.  No
+        // 'gaze' event fires for that frame, so the demo Kalman just predicts
+        // forward without a measurement update.
+        if (this._models.gaze && (now - this._lastGazeTime > this._gazeInterval)) {
+            const gateProb = this._vs?.config?.gazeEyeOpenGateProb ?? 0.7;
+            const eyeSt    = this._vs?._lastEyeState;
+            const eyesOpen = !eyeSt || (Math.max(eyeSt.leftProb, eyeSt.rightProb) >= gateProb);
+            if (eyesOpen) {
+                this._lastGazeTime = now;
+                const gazeBox = padBox(box, w, h, 0.2);
+                frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');
             }
         }
 
