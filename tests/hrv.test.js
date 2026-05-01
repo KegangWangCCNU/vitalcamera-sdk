@@ -239,13 +239,15 @@ describe('RealtimePeakDetector', () => {
 // ---------------------------------------------------------------------------
 import { computeHrv } from '../src/core/hrv.js';
 
+import { filterCompensatingPairs } from '../src/core/hrv.js';
+
 describe('computeHrv', () => {
     it('returns null for too-short input', () => {
         assert.equal(computeHrv([]), null);
         assert.equal(computeHrv([{t:0,v:1},{t:33,v:0.5}]), null);
     });
 
-    it('produces RMSSD/CV/confidence for a realistic 30 s window', () => {
+    it('produces RMSSD for a realistic 30 s window', () => {
         const fs = 30, dur = 30, baseFreq = 1.2;
         const samples = [];
         let phase = 0;
@@ -258,14 +260,28 @@ describe('computeHrv', () => {
         const r = computeHrv(samples);
         assert.ok(r, 'should produce a result');
         assert.ok(Number.isFinite(r.rmssd) && r.rmssd >= 0);
-        assert.ok(r.cv > 0 && r.cv < 0.25);
-        assert.ok(r.confidence >= 0 && r.confidence <= 1);
+    });
+});
+
+describe('filterCompensatingPairs', () => {
+    it('passes a clean RR series unchanged', () => {
+        const rr = [800, 810, 795, 802, 798, 808, 805, 800];
+        const out = filterCompensatingPairs(rr);
+        assert.deepEqual(out, rr);
     });
 
-    it('rejects pure noise', () => {
-        const samples = [];
-        for (let i = 0; i < 30 * 30; i++) samples.push({ t: i * 33.3, v: Math.random() });
-        const r = computeHrv(samples);
-        assert.equal(r, null);
+    it('drops both members of an obvious compensating pair', () => {
+        // peak detected ~150 ms early between idx 3 & 4 → bad pair
+        const rr = [800, 800, 800, 650, 950, 800, 800];
+        const out = filterCompensatingPairs(rr);
+        assert.equal(out.length, 5);
+        for (const v of out) assert.ok(Math.abs(v - 800) < 50);
+    });
+
+    it('keeps natural HRV variation', () => {
+        const rr = [800, 830, 770, 815, 825, 790, 805, 810, 795];
+        const out = filterCompensatingPairs(rr);
+        assert.ok(out.length >= rr.length - 2,
+            `expected ≥ ${rr.length - 2}, got ${out.length}`);
     });
 });

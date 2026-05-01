@@ -570,8 +570,6 @@ class VitalCamera {
         if (!data || data.rmssd == null || !Number.isFinite(data.rmssd)) return;
         this.emit('hrv', {
             rmssd: data.rmssd,
-            cv: data.cv,
-            confidence: data.confidence,
             timestamp: Date.now(),
         });
     }

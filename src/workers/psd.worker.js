@@ -147,65 +147,45 @@ function _madFilter(rr) {
  * Run the full HRV pipeline on the given timestamped samples.
  * Mirror of computeHrv() in hrv.js.
  */
-function _runHrv(samples, dbg) {
-    if (!samples || samples.length < 8) { dbg.reject = 'too_few_samples'; return null; }
-    const n = samples.length;
-    const ampView = { length: n }, negAmpView = { length: n };
-    for (let i = 0; i < n; i++) { ampView[i] = samples[i].v; negAmpView[i] = -samples[i].v; }
-
-    let peaks = _detectBvpPeaks(samples);
-    dbg.peaksRaw = peaks.length;
-    if (peaks.length < 4) { dbg.reject = 'too_few_peaks_raw'; return null; }
-    peaks = _rejectAbnormalPeaks(peaks, ampView);
-    dbg.peaksAfterReject = peaks.length;
-    if (peaks.length < 4) { dbg.reject = 'too_few_peaks_after_reject'; return null; }
-    const peakTimes = _refineExtrema(peaks, samples, true);
-    const rrUpper = [];
-    for (let i = 1; i < peakTimes.length; i++) rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
-    dbg.rrUpper = rrUpper.length;
-
-    let valleys = _detectBvpValleys(samples);
-    dbg.valleysRaw = valleys.length;
-    if (valleys.length >= 4) valleys = _rejectAbnormalPeaks(valleys, negAmpView);
-    dbg.valleysAfterReject = valleys.length;
-    if (valleys.length >= 4) {
-        const valleyTimes = _refineExtrema(valleys, samples, false);
-        const rrLower = [];
-        for (let i = 1; i < valleyTimes.length; i++) rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
-        const cd = Math.abs(rrUpper.length - rrLower.length);
-        dbg.countDiff = cd;
-        if (cd > 2) { dbg.reject = 'count_diff_too_large'; return null; }
-        const mU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
-        const mL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
-        const meanRatio = Math.abs(mU - mL) / mU;
-        dbg.meanRatio = +meanRatio.toFixed(4);
-        if (meanRatio > 0.05) { dbg.reject = 'mean_diff_too_large'; return null; }
+function _filterCompensatingPairs(rr) {
+    if (rr.length < 4) return rr.slice();
+    const diffs = new Array(rr.length - 1);
+    for (let i = 1; i < rr.length; i++) diffs[i - 1] = Math.abs(rr[i] - rr[i - 1]);
+    // Robust scale: lower-quartile diff (artefacts inflate the upper half)
+    const sorted = diffs.slice().sort((a, b) => a - b);
+    const halfMed = sorted[Math.floor(sorted.length / 4)];
+    const threshold = Math.max(4 * halfMed, 150);
+    const keep = new Array(rr.length).fill(true);
+    for (let i = 1; i < rr.length; i++) {
+        if (diffs[i - 1] > threshold) { keep[i - 1] = false; keep[i] = false; }
     }
+    const out = [];
+    for (let i = 0; i < rr.length; i++) if (keep[i]) out.push(rr[i]);
+    return out;
+}
 
-    const rrQ = _quotientFilter(rrUpper);
-    const rrF = _madFilter(rrQ);
-    dbg.rrQ = rrQ.length;
-    dbg.rrF = rrF.length;
-    const survival = rrF.length / rrUpper.length;
-    dbg.survival = +survival.toFixed(3);
-    if (survival < 0.6) { dbg.reject = 'low_survival'; return null; }
-    if (rrF.length < 6) { dbg.reject = 'too_few_rrf'; return null; }
+function _runHrv(samples, dbg) {
+    if (!samples || samples.length < 30) { dbg.reject = 'too_few_samples'; return null; }
+    const peaks = _detectBvpPeaks(samples);
+    dbg.peaks = peaks.length;
+    if (peaks.length < 6) { dbg.reject = 'too_few_peaks'; return null; }
+    const peakTimes = _refineExtrema(peaks, samples, true);
+    const rrRaw = [];
+    for (let i = 1; i < peakTimes.length; i++) rrRaw.push(peakTimes[i] - peakTimes[i - 1]);
+    dbg.rrRaw = rrRaw.length;
 
-    const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
-    let varF = 0;
-    for (const r of rrF) varF += (r - meanF) ** 2;
-    const stdF = Math.sqrt(varF / rrF.length);
-    const cv = stdF / meanF;
-    dbg.cv = +cv.toFixed(4);
-    if (cv < 0.005) { dbg.reject = 'cv_too_low'; return null; }
-    if (cv > 0.25)  { dbg.reject = 'cv_too_high'; return null; }
+    const rrPhys = rrRaw.filter(v => v >= 300 && v <= 2000);
+    dbg.rrPhys = rrPhys.length;
+    if (rrPhys.length < 5) { dbg.reject = 'rr_below_phys_min'; return null; }
+
+    const rrClean = _filterCompensatingPairs(rrPhys);
+    dbg.rrClean = rrClean.length;
+    dbg.dropped = rrPhys.length - rrClean.length;
+    if (rrClean.length < 5) { dbg.reject = 'too_few_after_compensating_pairs'; return null; }
 
     let sumSq = 0;
-    for (let i = 1; i < rrF.length; i++) { const d = rrF[i] - rrF[i - 1]; sumSq += d * d; }
-    const rmssd = Math.sqrt(sumSq / (rrF.length - 1));
-    const cvHealthy = (cv >= 0.01 && cv <= 0.15) ? 1 : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
-    const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
-    return { rmssd, cv, confidence };
+    for (let i = 1; i < rrClean.length; i++) { const d = rrClean[i] - rrClean[i - 1]; sumSq += d * d; }
+    return { rmssd: Math.sqrt(sumSq / (rrClean.length - 1)) };
 }
 
 /* ── Message handler ── */

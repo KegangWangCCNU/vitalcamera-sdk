@@ -210,64 +210,75 @@ export function computeHrvMetrics(rrFiltered) {
 }
 
 /**
- * One-shot HRV pipeline: detect peaks (and valleys for cross-validation),
- * refine timing with parabolic fits on irregular samples, run the three
- * confidence gates, and emit { rmssd, cv, confidence } or null when the
- * window is too noisy / smooth / short.
+ * Filter compensating-pair RR artefacts. When peak detection mis-locates
+ * a single peak by 1-2 frames, RR[i-1] and RR[i] swap mass — one too long,
+ * one too short — so |RR[i] - RR[i-1]| spikes far above the typical
+ * inter-RR variation. We use the median |ΔRR| in this window as the
+ * scale and drop both members of any pair whose |ΔRR| exceeds k × that
+ * (with a floor so very-still subjects don't have a near-zero scale and
+ * get over-pruned).
  *
- * Pure function — same code lives inline inside psd.worker.js so the heavy
- * compute doesn't run on the main thread. Exported here for direct callers
- * (tests, custom pipelines).
- *
- * @param {{t:number, v:number}[]} samples
- * @returns {{ rmssd:number, cv:number, confidence:number } | null}
+ * @param {number[]} rr   RR intervals, ms
+ * @returns {number[]}    Filtered RR intervals
  */
-export function computeHrv(samples) {
-    if (!samples || samples.length < 8) return null;
+export function filterCompensatingPairs(rr) {
+    if (rr.length < 4) return rr.slice();
+    const diffs = new Array(rr.length - 1);
+    for (let i = 1; i < rr.length; i++) diffs[i - 1] = Math.abs(rr[i] - rr[i - 1]);
 
-    const n = samples.length;
-    const ampView = { length: n }, negAmpView = { length: n };
-    for (let i = 0; i < n; i++) { ampView[i] = samples[i].v; negAmpView[i] = -samples[i].v; }
+    // Robust scale: median of the LOWER HALF of diffs.
+    // Using the full median makes the threshold scale up with the artefacts
+    // themselves (when many pairs are bad, their large diffs raise the
+    // median, hiding the artefacts behind it). The lower-half median tracks
+    // the real HRV scale instead.
+    const sorted = diffs.slice().sort((a, b) => a - b);
+    const halfMed = sorted[Math.floor(sorted.length / 4)];   // 25th percentile
+    const threshold = Math.max(4 * halfMed, 150);            // floor 150 ms
 
-    let peaks = detectBvpPeaks(samples);
-    if (peaks.length < 4) return null;
-    peaks = rejectAbnormalPeaks(peaks, ampView);
-    if (peaks.length < 4) return null;
-    const peakTimes = refinePeaksParabolic(peaks, samples);
-    const rrUpper = [];
-    for (let i = 1; i < peakTimes.length; i++) rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
-
-    // Gate 1: valley sanity (loose: count + mean only)
-    let valleys = detectBvpValleys(samples);
-    if (valleys.length >= 4) valleys = rejectAbnormalPeaks(valleys, negAmpView);
-    if (valleys.length >= 4) {
-        const valleyTimes = refineValleysParabolic(valleys, samples);
-        const rrLower = [];
-        for (let i = 1; i < valleyTimes.length; i++) rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
-        if (Math.abs(rrUpper.length - rrLower.length) > 2) return null;
-        const meanU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
-        const meanL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
-        if (Math.abs(meanU - meanL) / meanU > 0.05) return null;
+    const keep = new Array(rr.length).fill(true);
+    for (let i = 1; i < rr.length; i++) {
+        if (diffs[i - 1] > threshold) {
+            // Either RR[i-1] or RR[i] is corrupted — drop both
+            keep[i - 1] = false;
+            keep[i] = false;
+        }
     }
-
-    // Gate 2: filter survival rate
-    const rrQ = quotientFilterRR(rrUpper);
-    const rrF = madFilterRR(rrQ);
-    if (rrF.length / rrUpper.length < 0.6) return null;
-
-    // Gate 3: CV bounds
-    const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
-    let varF = 0;
-    for (const r of rrF) varF += (r - meanF) ** 2;
-    const stdF = Math.sqrt(varF / rrF.length);
-    const cv = stdF / meanF;
-    if (cv < 0.005 || cv > 0.25) return null;
-
-    const m = computeHrvMetrics(rrF);
-    if (!m) return null;
-    const survival = rrF.length / rrUpper.length;
-    const cvHealthy = (cv >= 0.01 && cv <= 0.15) ? 1.0 : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
-    const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
-    return { rmssd: m.rmssd, cv, confidence };
+    const out = [];
+    for (let i = 0; i < rr.length; i++) if (keep[i]) out.push(rr[i]);
+    return out;
 }
 
+/**
+ * Minimal HRV pipeline. SQI gating happens upstream (samples are admitted
+ * to the buffer only when SQI ≥ config.hrvSqiThreshold). Here we just:
+ *   detect peaks → refine timing → physiological bounds → drop
+ *   compensating-pair artefacts → RMSSD.
+ *
+ * @param {{t:number, v:number}[]} samples
+ * @returns {{ rmssd:number } | null}
+ */
+export function computeHrv(samples) {
+    if (!samples || samples.length < 30) return null;
+
+    const peaks = detectBvpPeaks(samples);
+    if (peaks.length < 6) return null;
+
+    const peakTimes = refinePeaksParabolic(peaks, samples);
+    const rrRaw = [];
+    for (let i = 1; i < peakTimes.length; i++) rrRaw.push(peakTimes[i] - peakTimes[i - 1]);
+
+    // Physiological bounds — 300 ms (200 BPM) to 2000 ms (30 BPM)
+    const rrPhys = rrRaw.filter(v => v >= 300 && v <= 2000);
+    if (rrPhys.length < 5) return null;
+
+    // The only outlier-rejection layer
+    const rrClean = filterCompensatingPairs(rrPhys);
+    if (rrClean.length < 5) return null;
+
+    let sumSq = 0;
+    for (let i = 1; i < rrClean.length; i++) {
+        const d = rrClean[i] - rrClean[i - 1];
+        sumSq += d * d;
+    }
+    return { rmssd: Math.sqrt(sumSq / (rrClean.length - 1)) };
+}
