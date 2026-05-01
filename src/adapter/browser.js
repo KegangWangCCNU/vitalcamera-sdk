@@ -50,6 +50,18 @@ const EYE_H        = 24;   // OCEC input height (matches model)
  */
 const EYE_BOX_WFRAC_IOD = 0.55;
 
+/**
+ * Per-frame motion gate for eye-state. Computed as max(|dKpL|, |dKpR|) / iod,
+ * i.e. the larger eye-keypoint displacement between consecutive frames as a
+ * fraction of the inter-eye distance. When this exceeds the threshold the head
+ * is moving too fast — the crop will be motion-blurred / misaligned, so we hold
+ * the previous eye state to avoid spurious "blink" detections during head turns.
+ *
+ * 0.10 lets normal talking-head movement through (~3–5%/frame) and suppresses
+ * brisk turns (≥10°/frame ≈ 10–15%/frame).
+ */
+const EYE_MOTION_GATE = 0.10;
+
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
 
@@ -249,6 +261,10 @@ export default class BrowserAdapter {
         /** @private Kalman filters for eye crop boxes (left, right × x,y,w,h) — same defaults as face box */
         this._kfEyeLX = null; this._kfEyeLY = null; this._kfEyeLW = null; this._kfEyeLH = null;
         this._kfEyeRX = null; this._kfEyeRY = null; this._kfEyeRW = null; this._kfEyeRH = null;
+
+        /** @private Previous-frame eye keypoints (px) for motion-gate computation */
+        this._lastEyeKpL = null;
+        this._lastEyeKpR = null;
 
         /** @private 30fps frame throttle (matching original FacePhys) */
         this._frameInterval = 1000 / 30;
@@ -620,6 +636,7 @@ export default class BrowserAdapter {
             this._kfBoxW = null; this._kfBoxH = null;
             this._kfEyeLX = null; this._kfEyeLY = null; this._kfEyeLW = null; this._kfEyeLH = null;
             this._kfEyeRX = null; this._kfEyeRY = null; this._kfEyeRW = null; this._kfEyeRH = null;
+            this._lastEyeKpL = null; this._lastEyeKpR = null;
             this._vs?.emit('face', {
                 detected: false,
                 box: null,
@@ -693,7 +710,19 @@ export default class BrowserAdapter {
             const dx = keypoints[0].x - keypoints[1].x;
             const dy = keypoints[0].y - keypoints[1].y;
             const iod = Math.hypot(dx, dy);
-            if (iod > 4) {
+            // Motion gate — skip the inference (and let _lastEyeState hold) when
+            // the head is moving too fast for the crop to be reliable.
+            let motionFrac = 0;
+            if (this._lastEyeKpL && this._lastEyeKpR) {
+                const dL = Math.hypot(keypoints[1].x - this._lastEyeKpL.x, keypoints[1].y - this._lastEyeKpL.y);
+                const dR = Math.hypot(keypoints[0].x - this._lastEyeKpR.x, keypoints[0].y - this._lastEyeKpR.y);
+                motionFrac = Math.max(dL, dR) / iod;
+            }
+            // Always remember current keypoints for next frame's motion calc
+            this._lastEyeKpL = { x: keypoints[1].x, y: keypoints[1].y };
+            this._lastEyeKpR = { x: keypoints[0].x, y: keypoints[0].y };
+
+            if (iod > 4 && motionFrac < EYE_MOTION_GATE) {
                 const rawR = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
                 const rawL = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
                 // Kalman-filter both eye boxes — same defaults as the face box for visual consistency
