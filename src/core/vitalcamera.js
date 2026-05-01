@@ -12,8 +12,10 @@ import RealtimePeakDetector from './peak-detect.js';
 import { estimateHeadPose } from './headpose.js';
 import {
     detectBvpPeaks,
+    detectBvpValleys,
     rejectAbnormalPeaks,
     refinePeaksParabolic,
+    refineValleysParabolic,
     quotientFilterRR,
     madFilterRR,
     computeHrvMetrics,
@@ -612,34 +614,61 @@ class VitalCamera {
     computeHrvFromSamples(samples) {
         if (!samples || samples.length < 8) return null;
 
-        // 1. Detect peaks directly on the irregular samples (no spline /
-        //    no uniform-grid resampling — too expensive at 200 Hz × 2 min).
-        let peaks = detectBvpPeaks(samples);
-        if (peaks.length < 4) return null;
-
-        // 2. Reject amplitude outliers (samples[p].v supplies amplitudes
-        //    via the array-like accessor — see rejectAbnormalPeaks docs).
+        // Build a flat amplitude view once (rejectAbnormalPeaks accesses by index)
         const ampView = { length: samples.length };
-        for (let i = 0; i < samples.length; i++) ampView[i] = samples[i].v;
-        peaks = rejectAbnormalPeaks(peaks, ampView);
-        if (peaks.length < 4) return null;
-
-        // 3. Refine each peak's *timestamp* with a 3-point parabolic fit on
-        //    (t_{i-1}, v_{i-1}), (t_i, v_i), (t_{i+1}, v_{i+1}).
-        //    On 30 Hz data this brings ±16 ms quantisation down to ~±1 ms.
-        const peakTimes = refinePeaksParabolic(peaks, samples);
-
-        // 4. RR intervals in ms (timestamps are already in ms — no fs term).
-        const rr = [];
-        for (let i = 1; i < peakTimes.length; i++) {
-            rr.push(peakTimes[i] - peakTimes[i - 1]);
+        const negAmpView = { length: samples.length };
+        for (let i = 0; i < samples.length; i++) {
+            ampView[i] = samples[i].v;
+            negAmpView[i] = -samples[i].v;
         }
 
-        // 5. Filter RR intervals
-        const rrQ = quotientFilterRR(rr);
-        const rrF = madFilterRR(rrQ);
+        // ── Upper peaks (primary measurement) ────────────────────────────
+        let peaks = detectBvpPeaks(samples);
+        if (peaks.length < 4) return null;
+        peaks = rejectAbnormalPeaks(peaks, ampView);
+        if (peaks.length < 4) return null;
+        const peakTimes = refinePeaksParabolic(peaks, samples);
+        const rrUpper = [];
+        for (let i = 1; i < peakTimes.length; i++) {
+            rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
+        }
 
-        // 6. Compute metrics
+        // ── Lower valleys (independent estimate, used only to validate) ──
+        // Same pipeline, run on the inverted signal.
+        let valleys = detectBvpValleys(samples);
+        if (valleys.length >= 4) {
+            valleys = rejectAbnormalPeaks(valleys, negAmpView);
+        }
+        if (valleys.length >= 4) {
+            const valleyTimes = refineValleysParabolic(valleys, samples);
+            const rrLower = [];
+            for (let i = 1; i < valleyTimes.length; i++) {
+                rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
+            }
+            // Pairwise compare RR_upper[i] vs RR_lower[i] for the prefix that
+            // both series cover. They both measure beat-to-beat in the same
+            // signal, so they should agree to within ~few percent. If the
+            // mean absolute difference exceeds 15 % of the mean upper RR the
+            // signal is too inconsistent (e.g. dicrotic notch being detected,
+            // motion artefacts) — abort this HRV update.
+            const N = Math.min(rrUpper.length, rrLower.length);
+            if (N >= 4) {
+                let sumDiff = 0, sumUpper = 0;
+                for (let i = 0; i < N; i++) {
+                    sumDiff  += Math.abs(rrUpper[i] - rrLower[i]);
+                    sumUpper += rrUpper[i];
+                }
+                const meanDiff  = sumDiff  / N;
+                const meanUpper = sumUpper / N;
+                if (meanUpper > 0 && meanDiff / meanUpper > 0.15) {
+                    return null;   // upper / lower disagree too much
+                }
+            }
+        }
+
+        // ── Final RMSSD always uses the upper peaks (more accurate) ──────
+        const rrQ = quotientFilterRR(rrUpper);
+        const rrF = madFilterRR(rrQ);
         return computeHrvMetrics(rrF);
     }
 

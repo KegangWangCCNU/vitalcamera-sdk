@@ -50,6 +50,44 @@ export function detectBvpPeaks(samples, minIbiMs = 333) {
 }
 
 /**
+ * Detect BVP valleys (lower-half local minima) on irregularly-sampled data —
+ * mirror of {@link detectBvpPeaks}. Used as an independent estimate of the
+ * inter-beat interval for cross-validation.
+ *
+ * @param {{t:number, v:number}[]} samples
+ * @param {number} [minIbiMs=333]
+ * @returns {number[]} Valley indices into `samples`
+ */
+export function detectBvpValleys(samples, minIbiMs = 333) {
+    const n = samples.length;
+    if (n < 6) return [];
+
+    let sum = 0;
+    for (const s of samples) sum += s.v;
+    const mean = sum / n;
+    let sumSq = 0;
+    for (const s of samples) { const d = s.v - mean; sumSq += d * d; }
+    const std = Math.sqrt(sumSq / n);
+    const thresh = mean - 0.3 * std;
+
+    const valleys = [];
+    for (let i = 2; i < n - 2; i++) {
+        const v = samples[i].v;
+        if (v < thresh
+            && v <= samples[i - 1].v && v <= samples[i + 1].v
+            && v <= samples[i - 2].v && v <= samples[i + 2].v) {
+            if (valleys.length === 0
+                || samples[i].t - samples[valleys[valleys.length - 1]].t >= minIbiMs) {
+                valleys.push(i);
+            } else if (v < samples[valleys[valleys.length - 1]].v) {
+                valleys[valleys.length - 1] = i;
+            }
+        }
+    }
+    return valleys;
+}
+
+/**
  * MAD-based peak amplitude rejection (3x MAD threshold).
  * Generic helper — `signalLike[p]` must yield the amplitude for peak index p.
  *
@@ -85,26 +123,38 @@ export function rejectAbnormalPeaks(peaks, signalLike) {
  * @param {{t:number, v:number}[]} samples
  * @returns {number[]}                      Refined peak timestamps (ms)
  */
-export function refinePeaksParabolic(peaks, samples) {
+function _refineExtremaParabolic(idxs, samples, expectMax) {
     const n = samples.length;
-    return peaks.map(i => {
+    return idxs.map(i => {
         if (i <= 0 || i >= n - 1) return samples[i].t;
         const x0 = samples[i - 1].t, y0 = samples[i - 1].v;
         const x1 = samples[i].t,     y1 = samples[i].v;
         const x2 = samples[i + 1].t, y2 = samples[i + 1].v;
 
-        // Lagrange-style: parabola y = a x^2 + b x + c through 3 points.
-        // Vertex at x = -b/(2a).
         const denom = (x0 - x1) * (x0 - x2) * (x1 - x2);
         if (Math.abs(denom) < 1e-12) return x1;
         const a = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / denom;
         const b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / denom;
-        if (Math.abs(a) < 1e-12 || a > 0) return x1;   // not a downward-opening parabola
+        if (Math.abs(a) < 1e-12) return x1;
+        if (expectMax && a > 0) return x1;     // not a downward-opening parabola
+        if (!expectMax && a < 0) return x1;    // not an upward-opening parabola
         const xv = -b / (2 * a);
-        // Sanity: vertex should fall inside the bracket [x0, x2].
         if (xv < x0 || xv > x2) return x1;
         return xv;
     });
+}
+
+export function refinePeaksParabolic(peaks, samples) {
+    return _refineExtremaParabolic(peaks, samples, /*expectMax=*/true);
+}
+
+/**
+ * Same fit as {@link refinePeaksParabolic} but for local minima — the
+ * parabola must open upward (a > 0). Used to cross-validate beat timing
+ * against the upper peaks.
+ */
+export function refineValleysParabolic(valleys, samples) {
+    return _refineExtremaParabolic(valleys, samples, /*expectMax=*/false);
 }
 
 /**

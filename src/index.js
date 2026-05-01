@@ -14,7 +14,9 @@ export { softmax, clamp } from './utils/math.js';
 export { estimateHeadPose } from './core/headpose.js';
 export { default as RealtimePeakDetector } from './core/peak-detect.js';
 export {
-    detectBvpPeaks, rejectAbnormalPeaks, refinePeaksParabolic,
+    detectBvpPeaks, detectBvpValleys,
+    rejectAbnormalPeaks,
+    refinePeaksParabolic, refineValleysParabolic,
     quotientFilterRR, madFilterRR, computeHrvMetrics
 } from './core/hrv.js';
 
