@@ -14,6 +14,7 @@ import {
     interpolateBvp,
     detectBvpPeaks,
     rejectAbnormalPeaks,
+    refinePeaksParabolic,
     quotientFilterRR,
     madFilterRR,
     computeHrvMetrics,
@@ -624,10 +625,14 @@ class VitalCamera {
         peaks = rejectAbnormalPeaks(peaks, interp.values);
         if (peaks.length < 4) return null;
 
-        // 4. Compute RR intervals (in ms)
+        // 3b. Refine each peak's position with a 3-point parabolic fit so
+        // RR intervals are not quantized to the 1/fs (= 5 ms at 200 Hz) grid.
+        const refined = refinePeaksParabolic(peaks, interp.values);
+
+        // 4. Compute RR intervals (in ms) from fractional indices
         const rr = [];
-        for (let i = 1; i < peaks.length; i++) {
-            rr.push((peaks[i] - peaks[i - 1]) / interp.fs * 1000);
+        for (let i = 1; i < refined.length; i++) {
+            rr.push((refined[i] - refined[i - 1]) / interp.fs * 1000);
         }
 
         // 5. Filter RR intervals

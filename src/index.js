@@ -15,7 +15,7 @@ export { estimateHeadPose } from './core/headpose.js';
 export { default as RealtimePeakDetector } from './core/peak-detect.js';
 export {
     buildCubicSpline, evalSpline, interpolateBvp,
-    detectBvpPeaks, rejectAbnormalPeaks,
+    detectBvpPeaks, rejectAbnormalPeaks, refinePeaksParabolic,
     quotientFilterRR, madFilterRR, computeHrvMetrics
 } from './core/hrv.js';
 

@@ -137,6 +137,35 @@ export function rejectAbnormalPeaks(peaks, signal) {
 }
 
 /**
+ * 3-point parabolic refinement of peak indices to fractional positions.
+ * For a local maximum at integer index `i`, fits the parabola through
+ * (i-1, y₋), (i, y₀), (i+1, y₊) and returns the vertex's x:
+ *
+ *   delta = 0.5 * (y₋ - y₊) / (y₋ - 2y₀ + y₊)
+ *   refined = i + delta            (|delta| ≤ 0.5 for a true local max)
+ *
+ * On the 200 Hz grid this drops peak-time uncertainty from 5 ms to
+ * ~0.5 ms, which directly improves RR-interval (and therefore RMSSD)
+ * precision without changing the upstream pipeline.
+ *
+ * @param {number[]} peaks  Integer peak indices from detectBvpPeaks
+ * @param {Float64Array|number[]} signal
+ * @returns {number[]} Fractional peak indices
+ */
+export function refinePeaksParabolic(peaks, signal) {
+    const n = signal.length;
+    return peaks.map(i => {
+        if (i <= 0 || i >= n - 1) return i;
+        const y0 = signal[i - 1], y1 = signal[i], y2 = signal[i + 1];
+        const denom = y0 - 2 * y1 + y2;
+        if (Math.abs(denom) < 1e-12) return i;        // flat / numerical zero
+        const delta = 0.5 * (y0 - y2) / denom;
+        if (delta < -1 || delta > 1) return i;        // not a clean local max
+        return i + delta;
+    });
+}
+
+/**
  * Adjacent RR ratio filter (0.75-1.33) + physiological bounds (300-2000ms).
  * @param {number[]} rr - RR intervals in ms
  * @returns {number[]}
