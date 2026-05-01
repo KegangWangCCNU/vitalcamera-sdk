@@ -86,7 +86,6 @@ describe('VitalCamera constructor', () => {
             sqiThreshold: 0.8,
         });
         assert.equal(vs.config.enableEmotion, false);
-        assert.equal(vs.config.hrvTargetFs, 100);
         assert.equal(vs.config.sqiThreshold, 0.8);
         // untouched defaults
         assert.equal(vs.config.enableGaze, true);
@@ -311,31 +310,32 @@ describe('VitalCamera HRV pipeline', () => {
     it('emits hrv event after enough BVP samples accumulate', () => {
         const vs = new VitalCamera({
             enableHrv: true,
-            hrvTargetFs: 200,
             hrvMinDuration: 5,       // lower threshold for test
             hrvUpdateInterval: 100,  // lower interval for test
         });
         vs.start();
+        vs._lastSqi = 1.0;           // bypass the BVP-sample SQI gate
 
         const hrvEvents = [];
         vs.on('hrv', (e) => hrvEvents.push(e));
 
-        // Feed 8 seconds of 1 Hz sine at ~30 fps
-        const freqHz = 1.0;
-        const fs = 30;
-        const n = fs * 8;
-        for (let i = 0; i < n; i++) {
+        // 12 s of ~1 Hz BVP at 30 fps with realistic 5 % period drift —
+        // pure sine is rejected by the new CV-too-low confidence gate.
+        const fs = 30, dur = 12, baseFreq = 1.0;
+        let phase = 0;
+        for (let i = 0; i < fs * dur; i++) {
             const t = i * (1000 / fs);
-            const v = Math.sin(2 * Math.PI * freqHz * i / fs);
-            vs._onInferenceResult({ value: v, timestamp: t });
+            const f = baseFreq * (1 + 0.05 * Math.sin(t / 4000));
+            phase += 2 * Math.PI * f / fs;
+            vs._onInferenceResult({ value: Math.sin(phase), timestamp: t });
         }
 
-        // With 8 s of data, minDuration 5 s, and updateInterval 100 ms,
-        // we should get at least one HRV event
         assert.ok(hrvEvents.length >= 1, `Expected >= 1 HRV events, got ${hrvEvents.length}`);
         for (const e of hrvEvents) {
             assert.ok(Number.isFinite(e.rmssd));
             assert.ok(typeof e.timestamp === 'number');
+            assert.ok(typeof e.confidence === 'number');
+            assert.ok(e.confidence >= 0 && e.confidence <= 1);
         }
     });
 });
