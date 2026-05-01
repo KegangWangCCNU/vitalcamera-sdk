@@ -147,49 +147,62 @@ function _madFilter(rr) {
  * Run the full HRV pipeline on the given timestamped samples.
  * Mirror of computeHrv() in hrv.js.
  */
-function _runHrv(samples) {
-    if (!samples || samples.length < 8) return null;
+function _runHrv(samples, dbg) {
+    if (!samples || samples.length < 8) { dbg.reject = 'too_few_samples'; return null; }
     const n = samples.length;
     const ampView = { length: n }, negAmpView = { length: n };
     for (let i = 0; i < n; i++) { ampView[i] = samples[i].v; negAmpView[i] = -samples[i].v; }
 
     let peaks = _detectBvpPeaks(samples);
-    if (peaks.length < 4) return null;
+    dbg.peaksRaw = peaks.length;
+    if (peaks.length < 4) { dbg.reject = 'too_few_peaks_raw'; return null; }
     peaks = _rejectAbnormalPeaks(peaks, ampView);
-    if (peaks.length < 4) return null;
+    dbg.peaksAfterReject = peaks.length;
+    if (peaks.length < 4) { dbg.reject = 'too_few_peaks_after_reject'; return null; }
     const peakTimes = _refineExtrema(peaks, samples, true);
     const rrUpper = [];
     for (let i = 1; i < peakTimes.length; i++) rrUpper.push(peakTimes[i] - peakTimes[i - 1]);
+    dbg.rrUpper = rrUpper.length;
 
-    // Valley sanity gate
     let valleys = _detectBvpValleys(samples);
+    dbg.valleysRaw = valleys.length;
     if (valleys.length >= 4) valleys = _rejectAbnormalPeaks(valleys, negAmpView);
+    dbg.valleysAfterReject = valleys.length;
     if (valleys.length >= 4) {
         const valleyTimes = _refineExtrema(valleys, samples, false);
         const rrLower = [];
         for (let i = 1; i < valleyTimes.length; i++) rrLower.push(valleyTimes[i] - valleyTimes[i - 1]);
-        if (Math.abs(rrUpper.length - rrLower.length) > 2) return null;
+        const cd = Math.abs(rrUpper.length - rrLower.length);
+        dbg.countDiff = cd;
+        if (cd > 2) { dbg.reject = 'count_diff_too_large'; return null; }
         const mU = rrUpper.reduce((a, b) => a + b, 0) / rrUpper.length;
         const mL = rrLower.reduce((a, b) => a + b, 0) / rrLower.length;
-        if (Math.abs(mU - mL) / mU > 0.05) return null;
+        const meanRatio = Math.abs(mU - mL) / mU;
+        dbg.meanRatio = +meanRatio.toFixed(4);
+        if (meanRatio > 0.05) { dbg.reject = 'mean_diff_too_large'; return null; }
     }
 
     const rrQ = _quotientFilter(rrUpper);
     const rrF = _madFilter(rrQ);
-    if (rrF.length / rrUpper.length < 0.6) return null;
-    if (rrF.length < 6) return null;
+    dbg.rrQ = rrQ.length;
+    dbg.rrF = rrF.length;
+    const survival = rrF.length / rrUpper.length;
+    dbg.survival = +survival.toFixed(3);
+    if (survival < 0.6) { dbg.reject = 'low_survival'; return null; }
+    if (rrF.length < 6) { dbg.reject = 'too_few_rrf'; return null; }
 
     const meanF = rrF.reduce((a, b) => a + b, 0) / rrF.length;
     let varF = 0;
     for (const r of rrF) varF += (r - meanF) ** 2;
     const stdF = Math.sqrt(varF / rrF.length);
     const cv = stdF / meanF;
-    if (cv < 0.005 || cv > 0.25) return null;
+    dbg.cv = +cv.toFixed(4);
+    if (cv < 0.005) { dbg.reject = 'cv_too_low'; return null; }
+    if (cv > 0.25)  { dbg.reject = 'cv_too_high'; return null; }
 
     let sumSq = 0;
     for (let i = 1; i < rrF.length; i++) { const d = rrF[i] - rrF[i - 1]; sumSq += d * d; }
     const rmssd = Math.sqrt(sumSq / (rrF.length - 1));
-    const survival = rrF.length / rrUpper.length;
     const cvHealthy = (cv >= 0.01 && cv <= 0.15) ? 1 : (cv < 0.01 ? cv / 0.01 : 0.15 / cv);
     const confidence = Math.max(0, Math.min(1, survival * cvHealthy));
     return { rmssd, cv, confidence };
@@ -203,12 +216,14 @@ self.onmessage = async (e) => {
         else if (type === 'run') await handleRun(payload);
         else if (type === 'hrv_run') {
             const start = performance.now();
-            const result = _runHrv(payload.samples);
+            const dbg = {};
+            const result = _runHrv(payload.samples, dbg);
+            const elapsed = performance.now() - start;
             self.postMessage({
                 type: 'hrv_result',
                 payload: result === null
-                    ? { rmssd: null, time: performance.now() - start }
-                    : { ...result, time: performance.now() - start }
+                    ? { rmssd: null, reject: dbg.reject, time: elapsed }
+                    : { ...result, time: elapsed }
             });
         }
         else if (type === 'setMode') { lowPowerMode = payload.isLowPower; }
@@ -297,3 +312,4 @@ async function handleRun({ inputData }) {
         payload: resultPayload
     });
 }
+                                                                                                                               
