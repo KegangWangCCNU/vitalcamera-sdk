@@ -11,7 +11,6 @@
 import RealtimePeakDetector from './peak-detect.js';
 import { estimateHeadPose } from './headpose.js';
 import {
-    interpolateBvp,
     detectBvpPeaks,
     rejectAbnormalPeaks,
     refinePeaksParabolic,
@@ -59,7 +58,6 @@ const DEFAULTS = {
     enableEyeState: true,
     enableHeadPose: true,
     enableHrv: true,
-    hrvTargetFs: 200,
     hrvMinDuration: 15,       // seconds
     hrvMaxWindow: 120,        // seconds — sliding window cap (2 minutes)
     hrvUpdateInterval: 1000,  // ms
@@ -143,7 +141,6 @@ class VitalCamera {
      * @param {boolean} [config.enableEyeState=true]
      * @param {boolean} [config.enableHeadPose=true]
      * @param {boolean} [config.enableHrv=true]
-     * @param {number}  [config.hrvTargetFs=200]
      * @param {number}  [config.hrvMinDuration=15]
      * @param {number}  [config.hrvMaxWindow=120]         Max BVP window in seconds (default 2 min)
      * @param {number}  [config.hrvUpdateInterval=1000]
@@ -613,26 +610,29 @@ class VitalCamera {
      * @returns {{ rmssd: number } | null}
      */
     computeHrvFromSamples(samples) {
-        // 1. Interpolate onto a uniform grid
-        const interp = interpolateBvp(samples, this.config.hrvTargetFs);
-        if (!interp) return null;
+        if (!samples || samples.length < 8) return null;
 
-        // 2. Detect peaks
-        let peaks = detectBvpPeaks(interp.values, interp.fs);
+        // 1. Detect peaks directly on the irregular samples (no spline /
+        //    no uniform-grid resampling — too expensive at 200 Hz × 2 min).
+        let peaks = detectBvpPeaks(samples);
         if (peaks.length < 4) return null;
 
-        // 3. Reject amplitude outliers
-        peaks = rejectAbnormalPeaks(peaks, interp.values);
+        // 2. Reject amplitude outliers (samples[p].v supplies amplitudes
+        //    via the array-like accessor — see rejectAbnormalPeaks docs).
+        const ampView = { length: samples.length };
+        for (let i = 0; i < samples.length; i++) ampView[i] = samples[i].v;
+        peaks = rejectAbnormalPeaks(peaks, ampView);
         if (peaks.length < 4) return null;
 
-        // 3b. Refine each peak's position with a 3-point parabolic fit so
-        // RR intervals are not quantized to the 1/fs (= 5 ms at 200 Hz) grid.
-        const refined = refinePeaksParabolic(peaks, interp.values);
+        // 3. Refine each peak's *timestamp* with a 3-point parabolic fit on
+        //    (t_{i-1}, v_{i-1}), (t_i, v_i), (t_{i+1}, v_{i+1}).
+        //    On 30 Hz data this brings ±16 ms quantisation down to ~±1 ms.
+        const peakTimes = refinePeaksParabolic(peaks, samples);
 
-        // 4. Compute RR intervals (in ms) from fractional indices
+        // 4. RR intervals in ms (timestamps are already in ms — no fs term).
         const rr = [];
-        for (let i = 1; i < refined.length; i++) {
-            rr.push((refined[i] - refined[i - 1]) / interp.fs * 1000);
+        for (let i = 1; i < peakTimes.length; i++) {
+            rr.push(peakTimes[i] - peakTimes[i - 1]);
         }
 
         // 5. Filter RR intervals

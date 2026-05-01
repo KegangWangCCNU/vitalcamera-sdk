@@ -1,116 +1,47 @@
 /**
  * HRV (Heart Rate Variability) computation engine.
- * Heartpy-style signal processing: spline interpolation, peak detection,
- * RR interval filtering, and time-domain HRV metrics.
+ * Operates directly on irregularly-sampled BVP timestamped samples — no
+ * pre-resampling, no cubic spline. Peak times are recovered to sub-sample
+ * precision via 3-point parabolic refinement around each detected peak.
  *
  * @module core/hrv
  */
 
 /**
- * Natural cubic spline interpolation.
- * @param {number[]} xs - x coordinates (knots), must be sorted ascending
- * @param {number[]} ys - y coordinates
- * @returns {{ a: number[], b: number[], c: number[], d: number[], x: number[] } | null}
+ * Detect BVP peaks directly on irregularly-sampled timestamped data.
+ *
+ * A sample at index i is a peak if
+ *   1. it is a 5-point local maximum  (>= its 4 nearest neighbours)
+ *   2. it sits above mean + 0.3 * std  of the whole window (rough thresholding)
+ *   3. it is at least `minIbiMs` after the previous accepted peak
+ *      (otherwise the higher of the two replaces the lower).
+ *
+ * @param {{t:number, v:number}[]} samples  Timestamp (ms) + amplitude pairs
+ * @param {number} [minIbiMs=333]            Minimum inter-beat interval (180 BPM)
+ * @returns {number[]}                       Peak indices into `samples`
  */
-export function buildCubicSpline(xs, ys) {
-    const n = xs.length - 1;
-    if (n < 1) return null;
-    const h = new Array(n);
-    for (let i = 0; i < n; i++) h[i] = xs[i + 1] - xs[i];
-    const alpha = new Array(n + 1).fill(0);
-    for (let i = 1; i < n; i++) {
-        alpha[i] = 3 / h[i] * (ys[i + 1] - ys[i]) - 3 / h[i - 1] * (ys[i] - ys[i - 1]);
-    }
-    const l = new Array(n + 1), mu = new Array(n + 1), z = new Array(n + 1);
-    l[0] = 1; mu[0] = 0; z[0] = 0;
-    for (let i = 1; i < n; i++) {
-        l[i] = 2 * (xs[i + 1] - xs[i - 1]) - h[i - 1] * mu[i - 1];
-        mu[i] = h[i] / l[i];
-        z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
-    }
-    l[n] = 1; z[n] = 0;
-    const c = new Array(n + 1), b = new Array(n), d = new Array(n);
-    c[n] = 0;
-    for (let j = n - 1; j >= 0; j--) {
-        c[j] = z[j] - mu[j] * c[j + 1];
-        b[j] = (ys[j + 1] - ys[j]) / h[j] - h[j] * (c[j + 1] + 2 * c[j]) / 3;
-        d[j] = (c[j + 1] - c[j]) / (3 * h[j]);
-    }
-    return { a: ys.slice(0, n), b, c: c.slice(0, n), d, x: xs };
-}
+export function detectBvpPeaks(samples, minIbiMs = 333) {
+    const n = samples.length;
+    if (n < 6) return [];
 
-/**
- * Evaluate a cubic spline at an array of x values.
- * @param {{ a, b, c, d, x }} sp - spline coefficients from buildCubicSpline
- * @param {number[]} xArr - x values to evaluate at
- * @returns {Float64Array}
- */
-export function evalSpline(sp, xArr) {
-    const { a, b, c, d, x } = sp;
-    const n = a.length;
-    const out = new Float64Array(xArr.length);
-    let j = 0;
-    for (let i = 0; i < xArr.length; i++) {
-        while (j < n - 1 && xArr[i] > x[j + 1]) j++;
-        if (j >= n) j = n - 1;
-        const dx = xArr[i] - x[j];
-        out[i] = a[j] + b[j] * dx + c[j] * dx * dx + d[j] * dx * dx * dx;
-    }
-    return out;
-}
+    let sum = 0;
+    for (const s of samples) sum += s.v;
+    const mean = sum / n;
+    let sumSq = 0;
+    for (const s of samples) { const d = s.v - mean; sumSq += d * d; }
+    const std = Math.sqrt(sumSq / n);
+    const thresh = mean + 0.3 * std;
 
-/**
- * Interpolate BVP (blood volume pulse) samples onto a uniform grid.
- * @param {{ t: number, v: number }[]} samples - timestamped samples
- * @param {number} targetFs - target sampling frequency in Hz
- * @returns {{ values: Float64Array, fs: number, tStart: number, tEnd: number } | null}
- */
-export function interpolateBvp(samples, targetFs) {
-    if (samples.length < 4) return null;
-    const xs = samples.map(s => s.t);
-    const ys = samples.map(s => s.v);
-    const tStart = xs[0], tEnd = xs[xs.length - 1];
-    const duration = (tEnd - tStart) / 1000;
-    if (duration < 2) return null;
-    const numSamples = Math.floor(duration * targetFs);
-    const step = (tEnd - tStart) / (numSamples - 1);
-    const xNew = new Array(numSamples);
-    for (let i = 0; i < numSamples; i++) xNew[i] = tStart + i * step;
-    const sp = buildCubicSpline(xs, ys);
-    if (!sp) return null;
-    return { values: evalSpline(sp, xNew), fs: targetFs, tStart, tEnd };
-}
-
-/**
- * Moving-average peak detection for BVP signals.
- * @param {Float64Array|number[]} signal
- * @param {number} fs - sampling frequency in Hz
- * @returns {number[]} array of peak indices
- */
-export function detectBvpPeaks(signal, fs) {
-    const n = signal.length;
-    if (n < fs * 2) return [];
-    const winHalf = Math.floor(0.75 * fs / 2);
-    const movAvg = new Float64Array(n);
-    let runSum = 0, runCount = 0;
-    for (let i = 0; i < Math.min(winHalf + 1, n); i++) { runSum += signal[i]; runCount++; }
-    movAvg[0] = runSum / runCount;
-    for (let i = 1; i < n; i++) {
-        const addIdx = i + winHalf;
-        const remIdx = i - winHalf - 1;
-        if (addIdx < n) { runSum += signal[addIdx]; runCount++; }
-        if (remIdx >= 0) { runSum -= signal[remIdx]; runCount--; }
-        movAvg[i] = runSum / runCount;
-    }
-    const minDist = Math.round(0.33 * fs);
     const peaks = [];
     for (let i = 2; i < n - 2; i++) {
-        if (signal[i] > movAvg[i] &&
-            signal[i] >= signal[i - 1] && signal[i] >= signal[i + 1] &&
-            signal[i] >= signal[i - 2] && signal[i] >= signal[i + 2]) {
-            if (peaks.length === 0 || i - peaks[peaks.length - 1] >= minDist) {
+        const v = samples[i].v;
+        if (v > thresh
+            && v >= samples[i - 1].v && v >= samples[i + 1].v
+            && v >= samples[i - 2].v && v >= samples[i + 2].v) {
+            if (peaks.length === 0
+                || samples[i].t - samples[peaks[peaks.length - 1]].t >= minIbiMs) {
                 peaks.push(i);
-            } else if (signal[i] > signal[peaks[peaks.length - 1]]) {
+            } else if (v > samples[peaks[peaks.length - 1]].v) {
                 peaks[peaks.length - 1] = i;
             }
         }
@@ -120,13 +51,16 @@ export function detectBvpPeaks(signal, fs) {
 
 /**
  * MAD-based peak amplitude rejection (3x MAD threshold).
- * @param {number[]} peaks - peak indices
- * @param {Float64Array|number[]} signal
- * @returns {number[]} filtered peak indices
+ * Generic helper — `signalLike[p]` must yield the amplitude for peak index p.
+ *
+ * @param {number[]} peaks
+ * @param {ArrayLike<number>} signalLike  e.g. amplitudes array, or a
+ *                                        plain array of `{v}` values
+ * @returns {number[]}
  */
-export function rejectAbnormalPeaks(peaks, signal) {
+export function rejectAbnormalPeaks(peaks, signalLike) {
     if (peaks.length < 4) return peaks;
-    const amps = peaks.map(p => signal[p]);
+    const amps = peaks.map(p => signalLike[p]);
     const sorted = amps.slice().sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
     const deviations = amps.map(a => Math.abs(a - median));
@@ -137,31 +71,39 @@ export function rejectAbnormalPeaks(peaks, signal) {
 }
 
 /**
- * 3-point parabolic refinement of peak indices to fractional positions.
- * For a local maximum at integer index `i`, fits the parabola through
- * (i-1, y₋), (i, y₀), (i+1, y₊) and returns the vertex's x:
+ * Refine each peak's *time* using a 3-point parabolic fit through the
+ * peak sample and its two neighbours. Works on irregularly-spaced
+ * timestamps — the parabola is fit through (t_{i-1}, v_{i-1}),
+ * (t_i, v_i), (t_{i+1}, v_{i+1}) and the vertex's t-coordinate is
+ * returned (in ms — the same units as the input timestamps).
  *
- *   delta = 0.5 * (y₋ - y₊) / (y₋ - 2y₀ + y₊)
- *   refined = i + delta            (|delta| ≤ 0.5 for a true local max)
+ * For 30 Hz BVP this typically pushes peak-time uncertainty from
+ * ±16 ms (half the inter-sample interval) down to roughly ±1 ms,
+ * without needing a global resampling step.
  *
- * On the 200 Hz grid this drops peak-time uncertainty from 5 ms to
- * ~0.5 ms, which directly improves RR-interval (and therefore RMSSD)
- * precision without changing the upstream pipeline.
- *
- * @param {number[]} peaks  Integer peak indices from detectBvpPeaks
- * @param {Float64Array|number[]} signal
- * @returns {number[]} Fractional peak indices
+ * @param {number[]} peaks                  Indices from detectBvpPeaks
+ * @param {{t:number, v:number}[]} samples
+ * @returns {number[]}                      Refined peak timestamps (ms)
  */
-export function refinePeaksParabolic(peaks, signal) {
-    const n = signal.length;
+export function refinePeaksParabolic(peaks, samples) {
+    const n = samples.length;
     return peaks.map(i => {
-        if (i <= 0 || i >= n - 1) return i;
-        const y0 = signal[i - 1], y1 = signal[i], y2 = signal[i + 1];
-        const denom = y0 - 2 * y1 + y2;
-        if (Math.abs(denom) < 1e-12) return i;        // flat / numerical zero
-        const delta = 0.5 * (y0 - y2) / denom;
-        if (delta < -1 || delta > 1) return i;        // not a clean local max
-        return i + delta;
+        if (i <= 0 || i >= n - 1) return samples[i].t;
+        const x0 = samples[i - 1].t, y0 = samples[i - 1].v;
+        const x1 = samples[i].t,     y1 = samples[i].v;
+        const x2 = samples[i + 1].t, y2 = samples[i + 1].v;
+
+        // Lagrange-style: parabola y = a x^2 + b x + c through 3 points.
+        // Vertex at x = -b/(2a).
+        const denom = (x0 - x1) * (x0 - x2) * (x1 - x2);
+        if (Math.abs(denom) < 1e-12) return x1;
+        const a = (x2 * (y1 - y0) + x1 * (y0 - y2) + x0 * (y2 - y1)) / denom;
+        const b = (x2 * x2 * (y0 - y1) + x1 * x1 * (y2 - y0) + x0 * x0 * (y1 - y2)) / denom;
+        if (Math.abs(a) < 1e-12 || a > 0) return x1;   // not a downward-opening parabola
+        const xv = -b / (2 * a);
+        // Sanity: vertex should fall inside the bracket [x0, x2].
+        if (xv < x0 || xv > x2) return x1;
+        return xv;
     });
 }
 
@@ -195,7 +137,7 @@ export function madFilterRR(rr) {
     const deviations = rr.map(v => Math.abs(v - median));
     const devSorted = deviations.slice().sort((a, b) => a - b);
     const mad = devSorted[Math.floor(devSorted.length / 2)] || 1e-6;
-    return rr.filter((v, i) => (0.6745 * Math.abs(v - median) / mad) < 3.5);
+    return rr.filter((v) => (0.6745 * Math.abs(v - median) / mad) < 3.5);
 }
 
 /**
