@@ -109,17 +109,19 @@ Workers are loaded automatically via Blob URLs — no need to copy worker files 
 
 ```
 VitalCamera (core, DOM-free)
-  ├── inference_worker  →  rPPG model  →  BVP signal
-  ├── psd_worker        →  PSD model   →  peak frequency → HR
-  ├── emotion_worker    →  ENet-B0     →  8-class probs
-  ├── gaze_worker       →  MobileOne   →  yaw/pitch
+  ├── inference_worker  →  rPPG SSM     →  BVP signal
+  ├── psd_worker        →  PSD model    →  peak frequency → HR
+  │                      └─ HRV pipeline →  RMSSD / SDNN
+  ├── emotion_worker    →  ENet-B0      →  8-class probs
+  ├── gaze_worker       →  MobileOne    →  yaw/pitch
+  ├── eye_state_worker  →  OCEC         →  per-eye open/closed
   ├── plot_worker       →  OffscreenCanvas rendering
-  ├── RealtimePeakDetector  →  beat events
-  └── HRV pipeline      →  RMSSD metrics
+  └── RealtimePeakDetector  →  per-beat events
 
 BrowserAdapter (optional)
   ├── Camera management (managed mode)
-  ├── Face detection (MediaPipe)
+  ├── Face detection (MediaPipe FaceDetector)
+  ├── Kalman-filtered face & eye boxes
   ├── Head pose estimation
   └── iOS compatibility (playsinline)
 ```
@@ -128,16 +130,17 @@ BrowserAdapter (optional)
 
 | Event | Payload | Rate |
 |-------|---------|------|
-| `heartrate` | `{ hr, peakFreq, psd, freq }` | ~1/s |
-| `bvp` | `{ value, sqi }` | 30/s |
-| `beat` | `{ timestamp, interval }` | per beat |
-| `hrv` | `{ rmssd, sdnn, meanRR }` | ~1/s |
-| `emotion` | `{ label, probs, logits }` | 2/s |
-| `gaze` | `{ yaw, pitch }` | 5/s |
-| `eyestate` | `{ left:{prob,open}, right:{prob,open}, bothClosed }` | 10/s |
-| `headpose` | `{ yaw, pitch, roll, normal }` | 30/s |
-| `face` | `{ box, keypoints, videoWidth, videoHeight }` | 30/s |
-| `error` | `{ message }` | on error |
+| `heartrate` | `{ hr, sqi, psd, freq, peak, timestamp }` | ~2/s |
+| `bvp` | `{ value, timestamp, time }` | 30/s |
+| `beat` | `{ ibi, timestamp }` | per beat |
+| `hrv` | `{ rmssd, sdnn, meanRR, n, timestamp }` | ~1/s |
+| `emotion` | `{ emotion, probs, time, timestamp }` | 2/s |
+| `gaze` | `{ yaw, pitch, confidence, time, timestamp }` | 5/s |
+| `eyestate` | `{ left:{prob,open}, right:{prob,open}, bothClosed, time, timestamp }` | 30/s |
+| `headpose` | `{ yaw, pitch, roll, normal, timestamp }` | 30/s |
+| `face` | `{ detected, box, keypoints, videoWidth, videoHeight, timestamp }` | 30/s |
+| `ready` | `{}` | once after init |
+| `error` | `{ source, message }` | on error |
 
 ## Models
 
@@ -213,6 +216,14 @@ If you use this SDK in your research, please cite the relevant papers:
                and Tuzel, Oncel and Ranjan, Anurag},
   booktitle = {CVPR},
   year      = {2023}
+}
+
+@misc{hyodo2025ocec,
+  title     = {OCEC — Open / Closed Eyes Classification},
+  author    = {Hyodo, Katsuya},
+  year      = {2025},
+  doi       = {10.5281/zenodo.17505461},
+  url       = {https://github.com/PINTO0309/OCEC}
 }
 ```
 

@@ -390,10 +390,7 @@
 
 <script type="module">
 // ─── Imports ───
-// Dev build — imports from local source (../src) so edits in src/ are picked up
-// on a hard reload. For production CDN-based demo, swap this back to:
-//   import { ... } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@<ver>/src/index.js';
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from '../src/index.js';
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.4.0/src/index.js';
 
 
 // ─── DOM refs ───
@@ -566,7 +563,7 @@ async function init() {
     adapter = new BrowserAdapter({
         videoElement: videoEl,
         canvases: { bvp: plotCanvas, trend: trendCanvas },
-        modelBasePath: '../models/',
+        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.4.0/models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
     });
 
