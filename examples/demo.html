@@ -538,8 +538,10 @@ async function handleSaveData() {
     if (eyeLog.length > 0) { csv = 'timestamp,left_prob,right_prob,left_open,right_open\n'; eyeLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3]},${r[4]}\n`; }); zip.file('eye_state.csv', csv); }
     if (headLog.length > 0) { csv = 'timestamp,yaw,pitch,roll\n'; headLog.forEach(r => { csv += `${r[0]},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)}\n`; }); zip.file('head_pose.csv', csv); }
     if (hrvLog.length > 0) {
-        const avg = hrvLog.reduce((s,r)=>s+r[1],0)/hrvLog.length;
-        csv = 'metric,value\n'; csv += `rmssd_mean,${avg.toFixed(4)}\nrmssd_last,${hrvLog[hrvLog.length-1][1].toFixed(4)}\nn_measurements,${hrvLog.length}\n`;
+        csv = 'timestamp,rmssd,sdnn,mean_rr,n\n';
+        hrvLog.forEach(r => {
+            csv += `${r[0]},${(r[1] ?? '').toFixed?.(4) ?? ''},${(r[2] ?? '').toFixed?.(4) ?? ''},${(r[3] ?? '').toFixed?.(2) ?? ''},${r[4] ?? ''}\n`;
+        });
         zip.file('hrv.csv', csv);
     }
     try {
@@ -579,10 +581,10 @@ async function init() {
         else { elHr.textContent = '-'; elHr.classList.remove('active'); }
     });
 
-    // ── HRV ──
-    vc.on('hrv', ({ rmssd }) => {
-        hrvLog.push([Date.now(), rmssd]);
-        elRmssd.textContent = rmssd.toFixed(1);
+    // ── HRV (panel only shows RMSSD; SAVE keeps all fields) ──
+    vc.on('hrv', (e) => {
+        hrvLog.push([Date.now(), e.rmssd, e.sdnn, e.meanRR, e.n]);
+        elRmssd.textContent = e.rmssd.toFixed(1);
     });
 
     // ── BVP + latency ──

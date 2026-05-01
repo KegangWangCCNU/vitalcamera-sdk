@@ -247,7 +247,7 @@ describe('computeHrv', () => {
         assert.equal(computeHrv([{t:0,v:1},{t:33,v:0.5}]), null);
     });
 
-    it('produces RMSSD for a realistic 30 s window', () => {
+    it('produces RMSSD + SDNN for a realistic 30 s window', () => {
         const fs = 30, dur = 30, baseFreq = 1.2;
         const samples = [];
         let phase = 0;
@@ -260,6 +260,9 @@ describe('computeHrv', () => {
         const r = computeHrv(samples);
         assert.ok(r, 'should produce a result');
         assert.ok(Number.isFinite(r.rmssd) && r.rmssd >= 0);
+        assert.ok(Number.isFinite(r.sdnn) && r.sdnn >= 0);
+        assert.ok(Number.isFinite(r.meanRR) && r.meanRR > 0);
+        assert.ok(typeof r.n === 'number' && r.n > 4);
     });
 });
 

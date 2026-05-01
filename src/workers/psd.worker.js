@@ -183,9 +183,18 @@ function _runHrv(samples, dbg) {
     dbg.dropped = rrPhys.length - rrClean.length;
     if (rrClean.length < 5) { dbg.reject = 'too_few_after_compensating_pairs'; return null; }
 
-    let sumSq = 0;
-    for (let i = 1; i < rrClean.length; i++) { const d = rrClean[i] - rrClean[i - 1]; sumSq += d * d; }
-    return { rmssd: Math.sqrt(sumSq / (rrClean.length - 1)) };
+    let sumSqDiff = 0;
+    for (let i = 1; i < rrClean.length; i++) { const d = rrClean[i] - rrClean[i - 1]; sumSqDiff += d * d; }
+    const rmssd = Math.sqrt(sumSqDiff / (rrClean.length - 1));
+
+    let sum = 0;
+    for (const r of rrClean) sum += r;
+    const meanRR = sum / rrClean.length;
+    let sumSqDev = 0;
+    for (const r of rrClean) sumSqDev += (r - meanRR) * (r - meanRR);
+    const sdnn = Math.sqrt(sumSqDev / rrClean.length);
+
+    return { rmssd, sdnn, meanRR, n: rrClean.length };
 }
 
 /* ── Message handler ── */

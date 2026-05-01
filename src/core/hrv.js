@@ -255,7 +255,7 @@ export function filterCompensatingPairs(rr) {
  *   compensating-pair artefacts → RMSSD.
  *
  * @param {{t:number, v:number}[]} samples
- * @returns {{ rmssd:number } | null}
+ * @returns {{ rmssd:number, sdnn:number, meanRR:number, n:number } | null}
  */
 export function computeHrv(samples) {
     if (!samples || samples.length < 30) return null;
@@ -275,10 +275,21 @@ export function computeHrv(samples) {
     const rrClean = filterCompensatingPairs(rrPhys);
     if (rrClean.length < 5) return null;
 
-    let sumSq = 0;
+    // RMSSD — root-mean-square of successive RR differences (short-term HRV)
+    let sumSqDiff = 0;
     for (let i = 1; i < rrClean.length; i++) {
         const d = rrClean[i] - rrClean[i - 1];
-        sumSq += d * d;
+        sumSqDiff += d * d;
     }
-    return { rmssd: Math.sqrt(sumSq / (rrClean.length - 1)) };
+    const rmssd = Math.sqrt(sumSqDiff / (rrClean.length - 1));
+
+    // SDNN — standard deviation of NN (RR) intervals (overall HRV)
+    let sum = 0;
+    for (const r of rrClean) sum += r;
+    const meanRR = sum / rrClean.length;
+    let sumSqDev = 0;
+    for (const r of rrClean) sumSqDev += (r - meanRR) * (r - meanRR);
+    const sdnn = Math.sqrt(sumSqDev / rrClean.length);
+
+    return { rmssd, sdnn, meanRR, n: rrClean.length };
 }
