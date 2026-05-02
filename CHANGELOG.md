@@ -2,6 +2,45 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.1 — 2026-05-02
+
+### Added
+
+- **`enableFaceLandmarker` master switch** (default `true`). The Face
+  Landmarker bundle is heavy (~3.8 MB, 18–50 ms / inference). Setting this
+  to `false` switches the SDK to a lightweight BlazeFace-only path:
+  `rPPG / HRV / emotion / head-pose` only, no `eyestate` / no `mouth` /
+  no `gaze`.
+- **Face-Landmarker dependency group**: `enableEyeState`, `enableMouth`,
+  `enableGaze` all require `enableFaceLandmarker`. If any sub-feature is
+  enabled while the master is off, the SDK forces it off and warns once.
+- **`enableMouth` config knob** (default `true`) — independently mutes the
+  `'mouth'` event without disabling the underlying Face Landmarker (eyestate
+  / gaze can stay on).
+- **`loadModels({ faceLandmarker })`** — control whether the 3.8 MB
+  `face_landmarker.task` bundle is pre-fetched. Pair with
+  `enableFaceLandmarker: false` for a true minimal build.
+
+### Removed
+
+- **OCEC eye-state pipeline**. `eye_state.worker.js` is no longer registered
+  in `_initWorkers`, the OCEC eye-crop generation is gone from the per-frame
+  loop, and `models/ocec_p.tflite` is dropped from `loadModels()` defaults
+  (`MODEL_FILES.eyeState` removed; the file itself stays in `models/` for
+  legacy callers but isn't fetched). Eye state is now Face-Landmarker-only.
+- **`loadModels({ eyeState })` option** removed (was a passthrough for the
+  OCEC bundle).
+
+### Internal
+
+- Adapter: stripped the OCEC eye-state batch generation, motion-gate
+  fast-path 0.6 injection, eye-keypoint Kalman filters, and the
+  `_resetEyeBaseline` 1 s grace lock — all dead code now that the FL path
+  drives eyestate.
+- `_onEyeStateResult` simplified: only handles the `{ leftProb, rightProb,
+  time }` shape that the FL adapter feeds; legacy OCEC `data.probs` branch
+  removed.
+
 ## 0.6.0 — 2026-05-02
 
 ### Added

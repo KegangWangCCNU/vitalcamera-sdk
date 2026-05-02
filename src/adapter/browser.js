@@ -383,13 +383,19 @@ export default class BrowserAdapter {
             await this._loadBlazeFace();
         }
 
-        // 2a. Initialise Face Landmarker (eye blendshape source). Best-effort:
-        //     if it fails, the SDK falls back to OCEC for eye state. That path
-        //     stays compiled in for compatibility / low-end fallback.
-        try {
-            await this._initFaceLandmarker();
-        } catch (err) {
-            this._vs?.emit('error', { source: 'faceLandmarker', message: err.message });
+        // 2a. Initialise Face Landmarker — only if the master toggle is on
+        //     (vitalcameraConfig.enableFaceLandmarker, default true). When it's
+        //     off the SDK runs in the lightweight BlazeFace-only fallback:
+        //     no eyestate / no mouth / no gaze events, just rPPG / HRV /
+        //     emotion / head-pose. Best-effort: if FL init fails (network /
+        //     GPU delegate), we still emit the error event but the rest of
+        //     the SDK keeps running.
+        if (this._vs?.config?.enableFaceLandmarker !== false) {
+            try {
+                await this._initFaceLandmarker();
+            } catch (err) {
+                this._vs?.emit('error', { source: 'faceLandmarker', message: err.message });
+            }
         }
 
         // 2b. Emotion calibration. Three options, can mix:
@@ -729,13 +735,15 @@ export default class BrowserAdapter {
                     jawStd = Math.sqrt(varSum / this._jawOpenBuf.length);
                     speaking = jawStd > this._jawOpenSpeakingStdThresh;
                 }
-                this._vs?.emit('mouth', {
-                    jawOpen:  m.jawOpen,
-                    jawStd,
-                    speaking,
-                    time:     m.time,
-                    timestamp: now,
-                });
+                if (this._vs?.config?.enableMouth) {
+                    this._vs.emit('mouth', {
+                        jawOpen:  m.jawOpen,
+                        jawStd,
+                        speaking,
+                        time:     m.time,
+                        timestamp: now,
+                    });
+                }
 
                 // Stash for advanced consumers (we don't use landmarks in the
                 // adapter today, but exposing them is a no-op cost-wise).
@@ -987,81 +995,9 @@ export default class BrowserAdapter {
             frameInput.emotionInput = cropAndResize(ctx, emotionBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
         }
 
-        // Eye-state via OCEC: only runs if Face Landmarker isn't supplying
-        // eye blendshapes. When FL is active, `_onEyeStateResult` is fed by
-        // the FL worker's blink scores (1 - eyeBlinkLeft/Right) at 15 fps,
-        // and this whole block is dead code for the frame.
-        if (!this._fmReady && this._models.eyeState && keypoints && keypoints.length >= 2) {
-            const dx = keypoints[0].x - keypoints[1].x;
-            const dy = keypoints[0].y - keypoints[1].y;
-            const iod = Math.hypot(dx, dy);
-            // Motion gate — when head moves too fast, skip inference and
-            // synthesise a neutral 0.6 prob (open for display, blocks gaze).
-            let motionFrac = 0;
-            if (this._lastEyeKpL && this._lastEyeKpR) {
-                const dL = Math.hypot(keypoints[1].x - this._lastEyeKpL.x, keypoints[1].y - this._lastEyeKpL.y);
-                const dR = Math.hypot(keypoints[0].x - this._lastEyeKpR.x, keypoints[0].y - this._lastEyeKpR.y);
-                motionFrac = Math.max(dL, dR) / iod;
-            }
-            // Always remember current keypoints for next frame's motion calc
-            this._lastEyeKpL = { x: keypoints[1].x, y: keypoints[1].y };
-            this._lastEyeKpR = { x: keypoints[0].x, y: keypoints[0].y };
-
-            // Track motion-gate state across frames so we can detect the
-            // transition "moving → stable" (or "first ever stable frame after
-            // init") and reset the per-user eye baseline at that moment. The
-            // initial value is `true` so the very first stable frame after
-            // construction triggers a baseline reset and 1s grace lock.
-            const motionActive = (iod > 4 && motionFrac >= EYE_MOTION_GATE);
-            if (this._eyeMotionWasActive && !motionActive && iod > 4) {
-                this._vs?._resetEyeBaseline();
-            }
-            this._eyeMotionWasActive = motionActive;
-
-            if (motionActive) {
-                // Head moving fast — bypass the worker, push a neutral state directly.
-                this._vs?._onEyeStateResult({
-                    leftProb: EYE_MOTION_NEUTRAL_PROB,
-                    rightProb: EYE_MOTION_NEUTRAL_PROB,
-                    time: 0,
-                });
-            } else if (iod > 4) {
-                const rawR = eyeBoxFromKeypoint(keypoints[0], iod, w, h);
-                const rawL = eyeBoxFromKeypoint(keypoints[1], iod, w, h);
-                // Kalman-filter both eye boxes — same defaults as the face box for visual consistency
-                let rightBox, leftBox;
-                if (!this._kfEyeLX) {
-                    this._kfEyeLX = new KalmanFilter1D(rawL.x, KF_BOX_Q); this._kfEyeLY = new KalmanFilter1D(rawL.y, KF_BOX_Q);
-                    this._kfEyeLW = new KalmanFilter1D(rawL.w, KF_BOX_Q); this._kfEyeLH = new KalmanFilter1D(rawL.h, KF_BOX_Q);
-                    this._kfEyeRX = new KalmanFilter1D(rawR.x, KF_BOX_Q); this._kfEyeRY = new KalmanFilter1D(rawR.y, KF_BOX_Q);
-                    this._kfEyeRW = new KalmanFilter1D(rawR.w, KF_BOX_Q); this._kfEyeRH = new KalmanFilter1D(rawR.h, KF_BOX_Q);
-                    leftBox  = { ...rawL };
-                    rightBox = { ...rawR };
-                } else {
-                    leftBox = {
-                        x: this._kfEyeLX.update(rawL.x), y: this._kfEyeLY.update(rawL.y),
-                        w: this._kfEyeLW.update(rawL.w), h: this._kfEyeLH.update(rawL.h),
-                    };
-                    rightBox = {
-                        x: this._kfEyeRX.update(rawR.x), y: this._kfEyeRY.update(rawR.y),
-                        w: this._kfEyeRW.update(rawR.w), h: this._kfEyeRH.update(rawR.h),
-                    };
-                }
-                if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
-                    // One crop per eye → packed into a 2-image batch (right at
-                    // index 0, left at index 1) which the worker runs as a
-                    // sequential loop of batch=1 inferences.
-                    const EYE_LEN = EYE_W * EYE_H * 3;
-                    const batch = new Float32Array(2 * EYE_LEN);
-                    const cropR = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
-                    const cropL = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
-                    batch.set(cropR, 0);
-                    batch.set(cropL, EYE_LEN);
-                    frameInput.eyeBatchInput = batch;
-                    this._lastEyeBoxes = { left: leftBox, right: rightBox };
-                }
-            }
-        }
+        // (OCEC eye-state pipeline removed in 0.6.1. Eye state is now sourced
+        //  from the MediaPipe Face Landmarker `eyeBlinkLeft/Right` blendshapes
+        //  fed directly into `_onEyeStateResult` from `_initFaceLandmarker`.)
 
         // Gaze (5 Hz throttle, gated by eye-state — when both eyes have p(open) <
         // gazeEyeOpenGateProb (default 0.6) we skip the inference entirely.  No
@@ -1185,20 +1121,24 @@ export default class BrowserAdapter {
         sqi:          'sqi_model.tflite',
         psd:          'psd_model.tflite',
         state:        'state.gz',
-        emotion:      'enet_b0_8_best_vgaf_dynamic_int8.tflite',
-        gaze:         'mobileone_s0_gaze_float16.tflite',
-        eyeState:     'ocec_p.tflite',
-        faceDetector: 'blaze_face_short_range.tflite',
+        emotion:        'enet_b0_8_best_vgaf_dynamic_int8.tflite',
+        gaze:           'mobileone_s0_gaze_float16.tflite',
+        faceDetector:   'blaze_face_short_range.tflite',
         faceLandmarker: 'face_landmarker.task',
+        // (eyeState / ocec_p.tflite removed in 0.6.1; eye state is now
+        //  sourced from Face Landmarker blendshapes.)
     };
 
     /**
      * Load all model files from a base path.
      * @param {string} basePath  Path to models directory (default './models/')
      * @param {Object} [options]
-     * @param {boolean} [options.emotion=true]  Load the emotion model.
-     * @param {boolean} [options.gaze=true]     Load the gaze model.
-     * @param {boolean} [options.eyeState=true] Load the OCEC eye open/closed model.
+     * @param {boolean} [options.emotion=true]         Load the emotion model.
+     * @param {boolean} [options.gaze=true]            Load the gaze model.
+     * @param {boolean} [options.faceLandmarker=true]  Load the MediaPipe Face Landmarker
+     *        bundle (~3.8 MB). Required for `eyestate`, `mouth`, and `gaze`
+     *        events; pass false alongside `vitalcameraConfig.enableFaceLandmarker:false`
+     *        for a lightweight rPPG / HRV / emotion / head-pose only build.
      * @returns {Promise<Object>} Model buffers ready for VitalCamera.
      */
     /**
@@ -1258,12 +1198,12 @@ export default class BrowserAdapter {
     }
 
     static async loadModels(basePath = './models/', options = {}) {
-        const { emotion = true, gaze = true, eyeState = true } = options;
+        const { emotion = true, gaze = true, faceLandmarker = true } = options;
         const base = basePath.endsWith('/') ? basePath : basePath + '/';
         const keys = ['rppg', 'rppgProj', 'sqi', 'psd', 'state'];
         if (emotion) keys.push('emotion');
         if (gaze) keys.push('gaze');
-        if (eyeState) keys.push('eyeState');
+        if (faceLandmarker) keys.push('faceLandmarker');
 
         const buffers = {};
         await Promise.all(keys.map(async (key) => {

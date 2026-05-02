@@ -37,22 +37,47 @@ Pass these inside `vitalcameraConfig`:
 
 ```javascript
 vitalcameraConfig: {
-  // ── Feature toggles ──
+  // ── Face Landmarker dependency group ──
+  // Master toggle for the heavy MediaPipe Face Landmarker bundle (~3.8 MB,
+  // ~18 ms / inference). When this is `false`, all three sub-features below
+  // are forced off and the SDK runs a lightweight BlazeFace-only pipeline.
+  enableFaceLandmarker: true,
+  enableEyeState:       true,   // requires enableFaceLandmarker
+  enableMouth:          true,   // requires enableFaceLandmarker (drives the 'mouth' event)
+  enableGaze:           true,   // requires enableFaceLandmarker
+
+  // ── Face-Landmarker-independent ──
   enableEmotion: true,       // Run emotion classification
-  enableGaze: true,          // Run gaze estimation
   enableHeadPose: true,      // Run head pose estimation
   enableHrv: true,           // Run HRV computation
 
   // ── Thresholds ──
   sqiThreshold: 0.38,               // Signal quality threshold for HR display
   gazeConfidenceThreshold: 0.04,    // Min softmax peak to accept gaze (blink filter)
+  eyeStateThreshold: 0.5,           // p(open) >= this → "open"
+  gazeEyeOpenGateProb: 0.6,         // skip gaze inference unless max(L,R) p(open) >= this
 
   // ── HRV settings ──
-  hrvTargetFs: 200,          // Interpolation sample rate (Hz)
-  hrvMinDuration: 15,        // Min seconds of data before first HRV output
+  hrvMinDuration: 15,        // Min seconds of clean BVP before first HRV output
+  hrvMaxWindow: 120,         // Sliding window cap (seconds)
   hrvUpdateInterval: 1000,   // Ms between HRV recalculations
+  hrvSqiThreshold: 0.6,      // Only accumulate BVP samples with SQI above this
 }
 ```
+
+### Face Landmarker dependency group
+
+`enableEyeState`, `enableMouth`, and `enableGaze` all consume Face Landmarker
+output (eyeBlink blendshapes for eye state, jawOpen for mouth, the 478-point
+landmark min/max as the L2CS face crop). If you set
+`enableFaceLandmarker: false` while leaving any of these `true`, the SDK
+forces them off at construction with a single console warning — silently
+letting them through would just produce no events.
+
+**The lightweight fallback** (FL off): you keep `rPPG / HRV / emotion / head-pose`,
+the BlazeFace face detector still drives face-bbox cropping for those, and
+you save ~3.8 MB download + 270 ms / sec of CPU. Use this for low-end
+mobile or battery-sensitive contexts.
 
 ### Parameter details
 

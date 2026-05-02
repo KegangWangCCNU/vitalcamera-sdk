@@ -45,9 +45,21 @@ const EventEmitterMixin = {
 
 const DEFAULTS = {
     workerBasePath: null,     // null = auto (fetch from SDK URL + Blob URL)
+
+    // ── Face Landmarker dependency group ─────────────────────────────────
+    // The features in this group all require MediaPipe Face Landmarker
+    // (~3.8 MB model, ~15–50 ms / inference). Setting `enableFaceLandmarker`
+    // to false forces all three sub-features off and switches to a lightweight
+    // BlazeFace-only fallback path that gives just rPPG / HRV / head-pose /
+    // emotion. The fallback is meant for low-end mobile / battery-sensitive
+    // contexts where the heavy mesh model is not affordable.
+    enableFaceLandmarker: true,
+    enableEyeState: true,           // requires enableFaceLandmarker
+    enableMouth: true,              // requires enableFaceLandmarker
+    enableGaze: true,               // requires enableFaceLandmarker
+
+    // ── Face-Landmarker-independent ──────────────────────────────────────
     enableEmotion: true,
-    enableGaze: true,
-    enableEyeState: true,
     enableHeadPose: true,
     enableHrv: true,
     hrvMinDuration: 15,       // seconds
@@ -151,6 +163,24 @@ class VitalCamera {
         this.config = { ...DEFAULTS, ...config };
         this.models = config.models || {};
 
+        // ── Face Landmarker dependency validation ──────────────────────
+        // eyestate / mouth / gaze all consume Face Landmarker output. If
+        // the caller turned the master FL switch off but left a sub-feature
+        // on, force the sub-feature off and warn — silently letting it
+        // through would just produce no events with no explanation.
+        if (!this.config.enableFaceLandmarker) {
+            for (const dep of ['enableEyeState', 'enableMouth', 'enableGaze']) {
+                if (this.config[dep]) {
+                    // eslint-disable-next-line no-console
+                    console.warn(
+                        `[VitalCamera] ${dep} requires enableFaceLandmarker=true; ` +
+                        `forcing it off.`
+                    );
+                    this.config[dep] = false;
+                }
+            }
+        }
+
         // State flags
         this.isRunning = false;
         this._workersReady = false;
@@ -240,9 +270,8 @@ class VitalCamera {
         if (this.config.enableGaze && this.models.gaze) {
             workerNames.push('gaze');
         }
-        if (this.config.enableEyeState && this.models.eyeState) {
-            workerNames.push('eye_state');
-        }
+        // (eyeState / OCEC dropped in 0.6.1 — eye state is now sourced from
+        //  Face Landmarker blendshapes, gated by enableFaceLandmarker.)
 
         const initPromises = workerNames.map(async (name) => {
             try {
@@ -439,9 +468,8 @@ class VitalCamera {
             case 'gaze':
                 this._onGazeResult(payload);
                 break;
-            case 'eye_state':
-                this._onEyeStateResult(payload);
-                break;
+            // (eye_state worker dropped in 0.6.1; FL-driven eye state is fed
+            //  directly through `_onEyeStateResult` from the adapter.)
         }
     }
 
@@ -660,45 +688,26 @@ class VitalCamera {
      * @private
      */
     _onEyeStateResult(data) {
-        const { time } = data;
+        if (!this.config.enableEyeState) return;
+        if (data == null || data.leftProb == null || data.rightProb == null) return;
         const now = Date.now();
-        let leftProb, rightProb;
-
-        if (data.probs) {
-            // Loop-mode: 2 sigmoid outputs (probs[0]=right, probs[1]=left).
-            // Raw OCEC output is the answer — no rolling baseline, no KL.
-            const probs = data.probs;
-            if (probs.length !== 2) return;
-            // 1-second grace lock after motion ends (or after init): force
-            // 0.6 instead of the raw output, so the user-visible signal stays
-            // in "uncertain" until the head settles.
-            if (now < this._eyeBaselineLockedUntil) {
-                rightProb = 0.6;
-                leftProb  = 0.6;
-            } else {
-                rightProb = probs[0];
-                leftProb  = probs[1];
-            }
-        } else if (data.leftProb != null && data.rightProb != null) {
-            // Motion-gate fallback (adapter-injected neutral 0.6).
-            leftProb  = data.leftProb;
-            rightProb = data.rightProb;
-        } else {
-            return;
-        }
 
         // Cache for adapter-side consumers (e.g. gaze gating)
-        this._lastEyeState = { leftProb, rightProb, timestamp: now };
+        this._lastEyeState = {
+            leftProb:  data.leftProb,
+            rightProb: data.rightProb,
+            timestamp: now,
+        };
 
         const th = this.config.eyeStateThreshold;
-        const left  = { prob: leftProb,  open: leftProb  >= th };
-        const right = { prob: rightProb, open: rightProb >= th };
+        const left  = { prob: data.leftProb,  open: data.leftProb  >= th };
+        const right = { prob: data.rightProb, open: data.rightProb >= th };
 
         this.emit('eyestate', {
             left,
             right,
             bothClosed: !left.open && !right.open,
-            time,
+            time: data.time,
             timestamp: now,
         });
     }
@@ -763,12 +772,7 @@ class VitalCamera {
                     payload: { modelBuffer: this.models.gaze },
                 });
                 break;
-            case 'eye_state':
-                worker.postMessage({
-                    type: 'init',
-                    payload: { modelBuffer: this.models.eyeState },
-                });
-                break;
+            // (eye_state init dropped in 0.6.1)
         }
     }
 

@@ -97,12 +97,25 @@ KL-blend math and details.
 
 ### Heart Rate Only (minimal resource usage)
 
-Only provide the models you need — workers for missing models are never created:
+Skip every heavy module — only fetch the rPPG / PSD models, turn off everything
+else, and the BlazeFace-only fallback runs at ~3 ms / frame:
 
 ```javascript
+const models = await BrowserAdapter.loadModels('./models/', {
+    emotion: false,
+    gaze: false,
+    faceLandmarker: false,   // skip the 3.8 MB FL bundle
+});
+
 const adapter = new BrowserAdapter({
     videoElement: document.getElementById('cam'),
-    models: { rppg, rppgProj, sqi, psd },  // no emotion, no gaze
+    models,
+    vitalcameraConfig: {
+        enableFaceLandmarker: false,   // master switch — implies eyestate / mouth / gaze off
+        enableEmotion:        false,
+        enableHeadPose:       false,
+        enableHrv:            false,
+    },
 });
 
 await adapter.init();
