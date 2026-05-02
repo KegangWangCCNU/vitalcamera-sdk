@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Eye-State Bench: batch=16 vs batch=1×16 (LiteRT WASM)</title>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; padding: 24px; background:#f5f0e8; color:#1a1a1a; }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    .sub { color: #6b6b6b; font-size: 13px; margin-bottom: 18px; }
+    .card { background: #fff; border: 1px solid rgba(0,0,0,0.12); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+    button { background: #c96442; color:#fff; border:none; padding: 10px 18px; border-radius: 8px; font-size: 14px; cursor: pointer; font-family: inherit; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    pre { background: #1a1a1a; color:#d8d8d8; padding: 14px; border-radius: 8px; font-size: 12px; line-height: 1.6; max-height: 50vh; overflow:auto; }
+    label { display:flex; align-items:center; gap:8px; font-size: 13px; }
+    .row { display:flex; gap:12px; align-items:center; margin-bottom:10px; }
+    input[type=number] { width: 80px; padding: 4px 6px; border: 1px solid rgba(0,0,0,0.2); border-radius: 4px; font-family: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>Eye-State Bench: batch=16 vs batch=1 × 16 (LiteRT WASM)</h1>
+    <p class="sub">
+        Loads both <code>ocec_p.tflite</code> (batch=1) and <code>ocec_p_b16.tflite</code>
+        (batch=16) directly via LiteRT in this page. Runs N inferences each, reports
+        per-call and per-image latency. Real browser WASM environment — what your
+        users will see.
+    </p>
+
+    <div class="card">
+        <div class="row">
+            <label>iterations <input id="iters" type="number" value="500" min="50" step="50"></label>
+            <label>warm-up <input id="warm" type="number" value="20" min="0" step="5"></label>
+            <button id="run">Run benchmark</button>
+        </div>
+        <div class="sub">
+            Cross-origin-isolated: <code id="coi">checking…</code>.
+            With WASM threads (COOP/COEP enabled) batch=16 typically scales 3–4×.
+            Without threads, both paths run single-threaded SIMD only.
+        </div>
+    </div>
+
+    <pre id="log">ready.</pre>
+</div>
+
+<script type="module">
+    document.getElementById('coi').textContent =
+        (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated)
+            ? 'YES (WASM threads available)'
+            : 'NO (WASM threads disabled — single-threaded SIMD only)';
+
+    const log = document.getElementById('log');
+    const append = (s) => { log.textContent += '\n' + s; log.scrollTop = log.scrollHeight; };
+    const replace = (s) => { log.textContent = s; };
+
+    const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/wasm/';
+    const EYE_W = 40, EYE_H = 24, EYE_LEN = EYE_W * EYE_H * 3;
+
+    // Use a worker per model so that LiteRT module loading doesn't interfere
+    // (LiteRT keeps interpreter state on its global; running two models on
+    // the same global confuses it). Each worker is identical except for
+    // batch size and which model it loads.
+    function makeWorker(batchN, modelUrl) {
+        const code = `
+            const WASM = '${WASM_BASE_URL}';
+            const EYE_W = ${EYE_W}, EYE_H = ${EYE_H};
+            const EYE_LEN = EYE_W * EYE_H * 3;
+            const N = ${batchN};
+            let LiteRT, Tensor, model;
+            self.onmessage = async (e) => {
+                const { type, payload } = e.data;
+                try {
+                    if (type === 'init') {
+                        const orig = self.fetch;
+                        self.fetch = async (input, init) => {
+                            if (typeof input === 'string' && input.endsWith('.wasm')) {
+                                const fileName = input.split('/').pop();
+                                return orig(WASM + fileName, init);
+                            }
+                            return orig(input, init);
+                        };
+                        const m = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
+                        LiteRT = m; Tensor = m.Tensor;
+                        await m.loadLiteRt(WASM);
+                        self.fetch = orig;
+                        const buf = await (await fetch(payload.modelUrl)).arrayBuffer();
+                        model = await m.loadAndCompile(URL.createObjectURL(new Blob([buf])), { accelerator: 'wasm' });
+                        self.postMessage({ type: 'initDone' });
+                    } else if (type === 'bench') {
+                        const { iters, warm } = payload;
+                        const data = new Float32Array(N * EYE_LEN);
+                        for (let i = 0; i < data.length; i++) data[i] = Math.random();
+
+                        // warm-up
+                        for (let w = 0; w < warm; w++) {
+                            const t = new Tensor(data, [N, EYE_H, EYE_W, 3]);
+                            const o = model.run([t]);
+                            t.delete();
+                            o[0].toTypedArray();
+                            o[0].delete();
+                        }
+
+                        // measured
+                        const t0 = performance.now();
+                        for (let k = 0; k < iters; k++) {
+                            const t = new Tensor(data, [N, EYE_H, EYE_W, 3]);
+                            const o = model.run([t]);
+                            t.delete();
+                            // realistic: read the output (not just discard)
+                            const _ = o[0].toTypedArray();
+                            o[0].delete();
+                        }
+                        const dt = performance.now() - t0;
+                        self.postMessage({
+                            type: 'benchDone',
+                            payload: { totalMs: dt, perCall: dt/iters, iters, batchN: N }
+                        });
+                    } else if (type === 'benchLoop') {
+                        // For batch=1 only: simulate "loop 16 times per logical frame"
+                        const { iters, warm, loopN } = payload;
+                        const data = new Float32Array(EYE_LEN); // batch=1
+                        for (let i = 0; i < data.length; i++) data[i] = Math.random();
+
+                        for (let w = 0; w < warm; w++) {
+                            const t = new Tensor(data, [1, EYE_H, EYE_W, 3]);
+                            const o = model.run([t]);
+                            t.delete();
+                            o[0].toTypedArray();
+                            o[0].delete();
+                        }
+
+                        const t0 = performance.now();
+                        for (let k = 0; k < iters; k++) {
+                            for (let j = 0; j < loopN; j++) {
+                                const t = new Tensor(data, [1, EYE_H, EYE_W, 3]);
+                                const o = model.run([t]);
+                                t.delete();
+                                const _ = o[0].toTypedArray();
+                                o[0].delete();
+                            }
+                        }
+                        const dt = performance.now() - t0;
+                        self.postMessage({
+                            type: 'benchDone',
+                            payload: { totalMs: dt, perCall: dt/iters, iters, batchN: 1, loopN }
+                        });
+                    }
+                } catch (err) {
+                    self.postMessage({ type: 'error', msg: err && err.toString() });
+                }
+            };
+        `;
+        const blobUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+        return new Worker(blobUrl, { type: 'module' });
+    }
+
+    function rpc(worker, msg) {
+        return new Promise((resolve, reject) => {
+            const onMsg = (e) => {
+                if (e.data.type === 'error') {
+                    worker.removeEventListener('message', onMsg);
+                    reject(new Error(e.data.msg));
+                } else if (e.data.type !== 'progress') {
+                    worker.removeEventListener('message', onMsg);
+                    resolve(e.data.payload || e.data);
+                }
+            };
+            worker.addEventListener('message', onMsg);
+            worker.postMessage(msg);
+        });
+    }
+
+    document.getElementById('run').addEventListener('click', async () => {
+        const btn = document.getElementById('run');
+        btn.disabled = true;
+        const iters = parseInt(document.getElementById('iters').value, 10);
+        const warm = parseInt(document.getElementById('warm').value, 10);
+
+        replace('Building workers …');
+        const w16 = makeWorker(16, '../models/ocec_p_b16.tflite');
+        const w1  = makeWorker(1,  '../models/ocec_p.tflite');
+
+        try {
+            append('Loading batch=16 model …');
+            await rpc(w16, { type: 'init', payload: { modelUrl: '../models/ocec_p_b16.tflite' } });
+            append('  ✓ batch=16 ready');
+
+            append('Loading batch=1 model …');
+            await rpc(w1,  { type: 'init', payload: { modelUrl: '../models/ocec_p.tflite' } });
+            append('  ✓ batch=1 ready');
+
+            append('');
+            append(`Running ${iters} iterations (warm-up ${warm}) …`);
+            append('');
+
+            // Bench batch=16: one invoke processes 16 images at once
+            const r16 = await rpc(w16, { type: 'bench', payload: { iters, warm } });
+            const us16_call  = r16.perCall * 1000;
+            const us16_image = us16_call / 16;
+            append(`batch=16 (one invoke per "frame"):`);
+            append(`  total              ${r16.totalMs.toFixed(1)} ms`);
+            append(`  per invoke         ${r16.perCall.toFixed(3)} ms  (= ${us16_call.toFixed(1)} µs)`);
+            append(`  per image (÷16)    ${us16_image.toFixed(1)} µs`);
+
+            append('');
+
+            // Bench batch=1 looped 16 times per "frame"
+            const r1 = await rpc(w1, { type: 'benchLoop', payload: { iters, warm, loopN: 16 } });
+            const us1_frame = r1.perCall * 1000;
+            const us1_image = us1_frame / 16;
+            append(`batch=1 ×16 sequential (16 invokes per "frame"):`);
+            append(`  total              ${r1.totalMs.toFixed(1)} ms`);
+            append(`  per "frame"        ${r1.perCall.toFixed(3)} ms  (= ${us1_frame.toFixed(1)} µs)`);
+            append(`  per single invoke  ${(us1_frame / 16).toFixed(1)} µs`);
+            append(`  per image          ${us1_image.toFixed(1)} µs`);
+
+            append('');
+            const ratio = r1.perCall / r16.perCall;
+            const winner = ratio > 1 ? 'batch=16' : 'batch=1×16 sequential';
+            append(`──`);
+            append(`Winner: ${winner}  ( ${(ratio > 1 ? ratio : 1/ratio).toFixed(2)}× faster )`);
+        } catch (err) {
+            append('');
+            append('ERROR: ' + err.message);
+            console.error(err);
+        } finally {
+            w16.terminate(); w1.terminate();
+            btn.disabled = false;
+        }
+    });
+</script>
+</body>
+</html>

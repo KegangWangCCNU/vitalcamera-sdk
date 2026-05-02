@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MediaPipe Face Landmarker — eye-state test</title>
+<style>
+    :root {
+        --bg: #f5f0e8; --surface: #ffffff;
+        --text-primary: #1a1a1a; --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+        --border: rgba(0,0,0,0.12); --accent: #c96442;
+        --ok: #2f9e44; --warn: #c92a2a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        background: var(--bg); color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+        padding: 24px; -webkit-font-smoothing: antialiased; line-height: 1.45;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 14px;
+            grid-template-columns: 1fr 1fr; }
+    @media (max-width: 720px) { .wrap { grid-template-columns: 1fr; } }
+    h1 { font-size: 20px; margin-bottom: 4px; grid-column: 1 / -1; }
+    .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 8px; grid-column: 1 / -1; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary);
+         text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+
+    .video-wrap {
+        position: relative; aspect-ratio: 4/3; background: #000;
+        border-radius: 8px; overflow: hidden;
+    }
+    #cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #overlay { pointer-events: none; }
+
+    .stat-row { display: grid; grid-template-columns: 130px 60px 1fr 60px; gap: 8px;
+                align-items: center; margin: 8px 0; font-size: 13px; }
+    .stat-label { color: var(--text-secondary); }
+    .stat-val { font-variant-numeric: tabular-nums; text-align: right; }
+    .bar-track { height: 10px; background: rgba(0,0,0,0.06); border-radius: 5px; overflow: hidden; }
+    .bar-fill { height: 100%; transition: width 0.1s, background 0.1s; }
+
+    .pill { padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .pill.open { background: rgba(47,158,68,0.15); color: var(--ok); }
+    .pill.closed { background: rgba(201,42,42,0.15); color: var(--warn); }
+    .pill.idle { background: rgba(0,0,0,0.06); color: var(--text-secondary); }
+
+    .latency-big { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 500; }
+    .latency-unit { font-size: 14px; color: var(--text-tertiary); margin-left: 4px; }
+    .latency-row { display: flex; justify-content: space-between; align-items: baseline; }
+    .meta { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+
+    button { background: var(--accent); color: #fff; border: none;
+             padding: 10px 20px; border-radius: 8px; font-size: 14px;
+             font-family: inherit; cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    pre { background: #1a1a1a; color: #d8d8d8; padding: 10px; border-radius: 6px;
+          font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
+          line-height: 1.5; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>MediaPipe Face Landmarker — eye-state &amp; latency probe</h1>
+    <p class="sub">
+        478 facial landmarks + 52 blendshape coefficients. We use
+        <code>eyeBlinkLeft</code>/<code>eyeBlinkRight</code> directly as eye-state
+        signal and compute the face bbox from landmark min/max (no BlazeFace).
+    </p>
+
+    <div class="card">
+        <h2>Live preview</h2>
+        <div class="video-wrap">
+            <video id="cam" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <div style="margin-top:10px;">
+            <button id="startBtn">Start</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Eye state &amp; latency</h2>
+
+        <div class="latency-row">
+            <div>
+                <span class="latency-big" id="latencyVal">--</span><span class="latency-unit"> ms / frame</span>
+            </div>
+            <div class="meta" id="latencyMeta">avg over last 30 calls</div>
+        </div>
+
+        <div style="height: 14px;"></div>
+
+        <div class="stat-row">
+            <div class="stat-label">Right eye (open prob)</div>
+            <div class="stat-val" id="probR">--</div>
+            <div class="bar-track"><div class="bar-fill" id="barR"></div></div>
+            <div class="pill idle" id="pillR">--</div>
+        </div>
+        <div class="stat-row">
+            <div class="stat-label">Left eye (open prob)</div>
+            <div class="stat-val" id="probL">--</div>
+            <div class="bar-track"><div class="bar-fill" id="barL"></div></div>
+            <div class="pill idle" id="pillL">--</div>
+        </div>
+
+        <div style="height: 14px;"></div>
+
+        <h2 style="margin-bottom: 6px;">Diagnostics</h2>
+        <div class="meta" id="initLog">waiting to start…</div>
+        <div class="meta" id="frameLog" style="margin-top:6px;"></div>
+    </div>
+</div>
+
+<script type="module">
+// CDN with Chinese-network-friendly fallback ordering. jsDelivr usually works
+// in China, but if its TLS cert gets MITMd by your provider (we hit
+// ERR_CERT_COMMON_NAME_INVALID once on storage.googleapis.com), switch one of
+// these comments and reload.
+import { FilesetResolver, FaceLandmarker } from
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm';
+//  'https://unpkg.com/@mediapipe/tasks-vision@0.10.14?module';
+//  'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.14/files/+esm';
+
+const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+//                 'https://unpkg.com/@mediapipe/tasks-vision@0.10.14/wasm';
+const MODEL_PATH = '../models/face_landmarker.task';   // local; no googleapis
+
+const videoEl = document.getElementById('cam');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+const initLog = document.getElementById('initLog');
+const frameLog = document.getElementById('frameLog');
+const latencyVal = document.getElementById('latencyVal');
+const latencyMeta = document.getElementById('latencyMeta');
+
+let landmarker = null;
+let running = false;
+let lastVideoTime = -1;
+const latRing = new Array(30).fill(0);
+let latRingIdx = 0;
+let latRingFilled = false;
+let frameCount = 0;
+let lastFpsT = performance.now();
+let lastFps = 0;
+
+const setText = (id, txt) => document.getElementById(id).textContent = txt;
+function logInit(msg) { initLog.innerHTML += `<br>${msg}`; }
+function logFrame(msg) { frameLog.textContent = msg; }
+
+// Map a per-eye prob_open value (0..1) to a visual bar/pill.
+function paintEye(probOpen, idSuffix) {
+    const pct = (probOpen * 100).toFixed(0);
+    setText('prob' + idSuffix, probOpen.toFixed(3));
+    const fill = document.getElementById('bar' + idSuffix);
+    fill.style.width = pct + '%';
+    // hue: 0 (red) → 120 (green)
+    const hue = Math.round(probOpen * 120);
+    fill.style.background = `hsl(${hue}, 70%, 50%)`;
+    const pill = document.getElementById('pill' + idSuffix);
+    pill.textContent = probOpen >= 0.5 ? 'open' : 'closed';
+    pill.className = 'pill ' + (probOpen >= 0.5 ? 'open' : 'closed');
+}
+
+async function init() {
+    startBtn.disabled = true;
+    initLog.innerHTML = '';
+    try {
+        logInit('loading WASM fileset from CDN…');
+        const fileset = await FilesetResolver.forVisionTasks(WASM_BASE);
+        logInit('✓ WASM loaded');
+
+        logInit(`loading model: ${MODEL_PATH} (~3.8 MB) and compiling…`);
+        const t0 = performance.now();
+        landmarker = await FaceLandmarker.createFromOptions(fileset, {
+            baseOptions: {
+                modelAssetPath: MODEL_PATH,
+                delegate: 'GPU',
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+            outputFaceBlendshapes: true,
+            outputFacialTransformationMatrixes: false,
+        });
+        logInit(`✓ Face Landmarker ready (${(performance.now()-t0).toFixed(0)} ms)`);
+
+        logInit('opening camera…');
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+        });
+        videoEl.srcObject = stream;
+        await new Promise(r => videoEl.onloadeddata = r);
+        await videoEl.play();
+        logInit(`✓ camera ${videoEl.videoWidth}×${videoEl.videoHeight}`);
+
+        // size canvas to source resolution
+        overlay.width = videoEl.videoWidth;
+        overlay.height = videoEl.videoHeight;
+
+        running = true;
+        requestAnimationFrame(loop);
+    } catch (err) {
+        logInit('<span style="color:var(--warn);">✗ ' + err.message + '</span>');
+        console.error(err);
+        startBtn.disabled = false;
+    }
+}
+
+function loop() {
+    if (!running) return;
+    const tNow = performance.now();
+
+    // Skip when video frame hasn't advanced (the API requires monotonically-
+    // increasing timestamps and gets confused if you re-pass the same frame).
+    if (videoEl.currentTime !== lastVideoTime) {
+        lastVideoTime = videoEl.currentTime;
+
+        const t0 = performance.now();
+        let result;
+        try {
+            result = landmarker.detectForVideo(videoEl, tNow);
+        } catch (err) {
+            console.error('detectForVideo:', err);
+            requestAnimationFrame(loop);
+            return;
+        }
+        const dt = performance.now() - t0;
+
+        // Latency rolling avg
+        latRing[latRingIdx] = dt;
+        latRingIdx = (latRingIdx + 1) % latRing.length;
+        if (latRingIdx === 0) latRingFilled = true;
+        const sample = latRingFilled ? latRing : latRing.slice(0, latRingIdx);
+        const avg = sample.reduce((s, v) => s + v, 0) / sample.length;
+        latencyVal.textContent = avg.toFixed(1);
+        latencyMeta.textContent = `last call: ${dt.toFixed(1)} ms · avg over ${sample.length} calls · max ${Math.max(...sample).toFixed(1)} ms`;
+
+        // Draw overlay: bbox from landmark min/max + eye landmark dots
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+            const lms = result.faceLandmarks[0];
+            const W = overlay.width, H = overlay.height;
+            let xMin=Infinity, xMax=-Infinity, yMin=Infinity, yMax=-Infinity;
+            for (const lm of lms) {
+                const px = lm.x * W, py = lm.y * H;
+                if (px < xMin) xMin = px;
+                if (px > xMax) xMax = px;
+                if (py < yMin) yMin = py;
+                if (py > yMax) yMax = py;
+            }
+            // Face bbox (red)
+            ctx.strokeStyle = 'rgba(201,100,66,0.85)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
+
+            // Eye contour landmark indices (MediaPipe reference 478-point topology)
+            // Right eye outer ring (subject's right = our left in mirrored view):
+            const RIGHT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+            // Left eye:
+            const LEFT_EYE  = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
+
+            ctx.strokeStyle = 'rgba(95,194,124,0.9)';
+            ctx.lineWidth = 1.5;
+            for (const ring of [RIGHT_EYE, LEFT_EYE]) {
+                ctx.beginPath();
+                for (let i = 0; i < ring.length; i++) {
+                    const lm = lms[ring[i]];
+                    const px = lm.x * W, py = lm.y * H;
+                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                }
+                ctx.closePath();
+                ctx.stroke();
+            }
+
+            // Pull blendshape eye-blink coefficients
+            if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+                const cats = result.faceBlendshapes[0].categories;
+                let blinkL = 0, blinkR = 0;
+                for (const c of cats) {
+                    if (c.categoryName === 'eyeBlinkLeft')  blinkL = c.score;
+                    if (c.categoryName === 'eyeBlinkRight') blinkR = c.score;
+                }
+                // Convert "blink" (0=open, 1=closed) → "open prob" (1 - blink)
+                paintEye(1 - blinkL, 'L');
+                paintEye(1 - blinkR, 'R');
+            }
+        } else {
+            // No face this frame
+            paintEye(0.5, 'L'); paintEye(0.5, 'R');
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.font = '20px sans-serif';
+            ctx.fillText('no face detected', 14, 28);
+        }
+
+        // FPS
+        frameCount++;
+        if (frameCount % 30 === 0) {
+            const now = performance.now();
+            lastFps = 30 / (now - lastFpsT) * 1000;
+            lastFpsT = now;
+        }
+        logFrame(`frame ${frameCount} · ~${lastFps.toFixed(1)} fps · video ${videoEl.videoWidth}×${videoEl.videoHeight}`);
+    }
+
+    requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener('click', init);
+
+// Stop on tab switch (free GPU + camera)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        running = false;
+        if (videoEl.srcObject) {
+            for (const t of videoEl.srcObject.getTracks()) t.stop();
+            videoEl.srcObject = null;
+        }
+        landmarker?.close?.();
+        startBtn.disabled = false;
+        startBtn.textContent = 'Restart';
+    }
+});
+</script>
+</body>
+</html>

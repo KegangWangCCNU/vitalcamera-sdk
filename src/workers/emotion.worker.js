@@ -38,8 +38,8 @@ const NEUTRAL_IDX = 5;
 
 /* ── Calibration constants — locked, baked into the SDK ── */
 const TAU = 0.6;             // KL temperature
-const W_BASELINE = 0.3;      // weight on the natural baseline distribution
-const W_CALIBRATED = 0.7;    // weight on the calibrated distribution
+const W_BASELINE = 0.2;      // weight on the natural baseline distribution
+const W_CALIBRATED = 0.8;    // weight on the calibrated distribution
 
 /**
  * Default baseline logits — captured from an Asian male resting face
@@ -64,6 +64,27 @@ const DEFAULT_ASIAN_BASELINE = [
 
 /* ── Mutable state ── */
 let baselineLogits = Float64Array.from(DEFAULT_ASIAN_BASELINE);   // Float64Array(8) | null
+
+/**
+ * Optional dynamic baseline mode.
+ *
+ * When enabled, after each successful run() we exponential-moving-average
+ * the just-computed raw logits into the baseline. The EMA coefficient is
+ * derived from a half-life so the user can think in seconds:
+ *   alpha = 1 - 0.5^(dt / halfLifeMs)
+ * where dt is the wall-clock interval between this inference and the
+ * previous one. With halfLifeMs = 5_000:
+ *   - holding a single expression for 5 s drifts the baseline 50 % of the
+ *     way toward those logits → output starts pulling toward Neutral
+ *     (the calibrated dist always centres on Neutral when current matches
+ *     baseline).
+ *   - blink / brief expressions don't move the baseline much.
+ *
+ * `dynamicLastT` is the timestamp (ms via performance.now()) of the last
+ * EMA update; null means "this is the first frame, just record t".
+ */
+let dynamicHalfLifeMs = null;   // null → static baseline, no auto-update
+let dynamicLastT = null;
 
 // NOTE: softmax duplicated from utils/math.js for worker isolation.
 function softmax(logits) {
@@ -145,14 +166,22 @@ self.onmessage = async (e) => {
             } else {
                 baselineLogits = Float64Array.from(DEFAULT_ASIAN_BASELINE);
             }
+            dynamicLastT = null;   // reset EMA timer on any baseline replacement
             self.postMessage({ type: 'baselineSet', payload: { hasBaseline: !!baselineLogits } });
+        }
+        else if (type === 'setDynamic') {
+            // payload.halfLifeMs:  number > 0  → enable EMA mode
+            //                      null/0/missing → disable
+            const hl = payload?.halfLifeMs;
+            dynamicHalfLifeMs = (typeof hl === 'number' && hl > 0) ? hl : null;
+            dynamicLastT = null;   // restart timer
         }
     } catch (err) {
         self.postMessage({ type: 'error', msg: err.toString() });
     }
 };
 
-async function handleInit({ modelBuffer, baselineLogits: initialBaseline }) {
+async function handleInit({ modelBuffer, baselineLogits: initialBaseline, dynamicHalfLifeMs: initialHl }) {
     const litertModule = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
     LiteRT = litertModule;
     Tensor = litertModule.Tensor;
@@ -185,6 +214,10 @@ async function handleInit({ modelBuffer, baselineLogits: initialBaseline }) {
     }
     // (otherwise: leave the default in place)
 
+    if (typeof initialHl === 'number' && initialHl > 0) {
+        dynamicHalfLifeMs = initialHl;
+    }
+
     self.postMessage({ type: 'initDone' });
 }
 
@@ -205,6 +238,26 @@ async function handleRun({ imgData }) {
 
     let topIdx = 0;
     for (let i = 1; i < probs.length; i++) if (probs[i] > probs[topIdx]) topIdx = i;
+
+    // ── Dynamic baseline EMA ──
+    // After each successful inference, optionally fold the just-observed
+    // raw logits into the calibration baseline using a half-life-derived
+    // EMA. The semantics are: a sustained expression slides the baseline
+    // toward those logits, which calibration then re-centres on Neutral —
+    // so any expression a user holds will fade to neutral over ~halfLife,
+    // and only DEVIATIONS from their resting expression light up.
+    if (dynamicHalfLifeMs && baselineLogits) {
+        const now = performance.now();
+        if (dynamicLastT !== null) {
+            const dt = now - dynamicLastT;
+            // alpha = 1 - 0.5^(dt / halfLife)  — fraction of "new" sample
+            const alpha = 1 - Math.pow(0.5, dt / dynamicHalfLifeMs);
+            for (let i = 0; i < baselineLogits.length; i++) {
+                baselineLogits[i] = (1 - alpha) * baselineLogits[i] + alpha * logitsArr[i];
+            }
+        }
+        dynamicLastT = now;
+    }
 
     self.postMessage({
         type: 'result',

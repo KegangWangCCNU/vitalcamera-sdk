@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Face Landmarker — worker test</title>
+<style>
+    :root {
+        --bg: #f5f0e8; --surface: #ffffff;
+        --text-primary: #1a1a1a; --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+        --border: rgba(0,0,0,0.12); --accent: #c96442;
+        --ok: #2f9e44; --warn: #c92a2a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        background: var(--bg); color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+        padding: 24px; -webkit-font-smoothing: antialiased; line-height: 1.45;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 14px;
+            grid-template-columns: 1fr 1fr; }
+    @media (max-width: 720px) { .wrap { grid-template-columns: 1fr; } }
+    h1 { font-size: 20px; margin-bottom: 4px; grid-column: 1 / -1; }
+    .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 8px; grid-column: 1 / -1; }
+    .card { background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; padding: 16px; }
+    h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary);
+         text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+    .video-wrap {
+        position: relative; aspect-ratio: 4/3; background: #000;
+        border-radius: 8px; overflow: hidden;
+    }
+    #cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #overlay { pointer-events: none; }
+
+    .stat-row { display: grid; grid-template-columns: 130px 60px 1fr 60px; gap: 8px;
+                align-items: center; margin: 8px 0; font-size: 13px; }
+    .stat-label { color: var(--text-secondary); }
+    .stat-val { font-variant-numeric: tabular-nums; text-align: right; }
+    .bar-track { height: 10px; background: rgba(0,0,0,0.06); border-radius: 5px; overflow: hidden; }
+    .bar-fill { height: 100%; transition: width 0.1s, background 0.1s; }
+
+    .pill { padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .pill.open { background: rgba(47,158,68,0.15); color: var(--ok); }
+    .pill.closed { background: rgba(201,42,42,0.15); color: var(--warn); }
+    .pill.idle { background: rgba(0,0,0,0.06); color: var(--text-secondary); }
+
+    .latency-big { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 500; }
+    .latency-unit { font-size: 14px; color: var(--text-tertiary); margin-left: 4px; }
+    .latency-row { display: flex; justify-content: space-between; align-items: baseline; }
+    .meta { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+
+    .latgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+    .latbox { background: #f7f3ec; border-radius: 6px; padding: 10px; }
+    .latbox .label { font-size: 10px; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 4px; letter-spacing: 0.05em; }
+    .latbox .num   { font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 500; }
+
+    button { background: var(--accent); color: #fff; border: none;
+             padding: 10px 20px; border-radius: 8px; font-size: 14px;
+             font-family: inherit; cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    label.knob { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 10px; }
+    label.knob input { width: 80px; padding: 4px 6px; border: 1px solid rgba(0,0,0,0.2); border-radius: 4px; font-family: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>MediaPipe Face Landmarker — running in a Worker</h1>
+    <p class="sub">
+        Module worker hosts <code>@mediapipe/tasks-vision</code>. Main thread
+        only does <code>createImageBitmap(videoEl)</code> per frame and transfers
+        the bitmap. Worker returns 478 landmarks + 2 blendshape coefs + per-call
+        ms. UI throttle is configurable below — defaults to 10 fps.
+    </p>
+
+    <div class="card">
+        <h2>Live preview</h2>
+        <div class="video-wrap">
+            <video id="cam" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <label class="knob">target rate <input id="targetHz" type="number" value="15" min="1" max="30" step="1"> fps</label>
+        <div style="margin-top:10px;">
+            <button id="startBtn">Start</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Latency &amp; eye state</h2>
+
+        <div class="latgrid">
+            <div class="latbox">
+                <div class="label">worker inference (avg / max)</div>
+                <div class="num"><span id="inferAvg">--</span> / <span id="inferMax">--</span> ms</div>
+            </div>
+            <div class="latbox">
+                <div class="label">round-trip (post→reply)</div>
+                <div class="num"><span id="rttAvg">--</span> ms avg</div>
+            </div>
+        </div>
+
+        <div style="height: 14px;"></div>
+
+        <div class="stat-row">
+            <div class="stat-label">Right eye (open prob)</div>
+            <div class="stat-val" id="probR">--</div>
+            <div class="bar-track"><div class="bar-fill" id="barR"></div></div>
+            <div class="pill idle" id="pillR">--</div>
+        </div>
+        <div class="stat-row">
+            <div class="stat-label">Left eye (open prob)</div>
+            <div class="stat-val" id="probL">--</div>
+            <div class="bar-track"><div class="bar-fill" id="barL"></div></div>
+            <div class="pill idle" id="pillL">--</div>
+        </div>
+
+        <div style="height: 14px;"></div>
+
+        <h2 style="margin-bottom: 6px;">Diagnostics</h2>
+        <div class="meta" id="initLog">waiting to start…</div>
+        <div class="meta" id="frameLog" style="margin-top:6px;"></div>
+    </div>
+</div>
+
+<script type="module">
+const videoEl   = document.getElementById('cam');
+const overlay   = document.getElementById('overlay');
+const startBtn  = document.getElementById('startBtn');
+const initLog   = document.getElementById('initLog');
+const frameLog  = document.getElementById('frameLog');
+const inferAvg  = document.getElementById('inferAvg');
+const inferMax  = document.getElementById('inferMax');
+const rttAvg    = document.getElementById('rttAvg');
+const targetHz  = document.getElementById('targetHz');
+
+const WASM_BASE  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+const MODEL_PATH = '../models/face_landmarker.task';
+
+const RIGHT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const LEFT_EYE  = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
+
+let worker = null;
+let running = false;
+let inFlight = false;
+let nextDueAt = 0;
+let lastResult = null;          // last successful worker result (held for rendering)
+let pendingPostT = 0;           // when did we post the last frame?
+const inferRing = new Array(30).fill(0);
+const rttRing   = new Array(30).fill(0);
+let inferIdx = 0, rttIdx = 0, inferFilled = false, rttFilled = false;
+let frameCount = 0;
+
+function logInit(msg) { initLog.innerHTML += `<br>${msg}`; }
+function logInitErr(msg) { initLog.innerHTML += `<br><span style="color:var(--warn);">✗ ${msg}</span>`; }
+
+function paintEye(probOpen, suf) {
+    const pct = (probOpen * 100).toFixed(0);
+    document.getElementById('prob' + suf).textContent = probOpen.toFixed(3);
+    const fill = document.getElementById('bar' + suf);
+    fill.style.width = pct + '%';
+    fill.style.background = `hsl(${Math.round(probOpen * 120)}, 70%, 50%)`;
+    const pill = document.getElementById('pill' + suf);
+    pill.textContent = probOpen >= 0.5 ? 'open' : 'closed';
+    pill.className = 'pill ' + (probOpen >= 0.5 ? 'open' : 'closed');
+}
+
+function updateLatencyUI() {
+    const inferSamples = inferFilled ? inferRing : inferRing.slice(0, inferIdx);
+    const rttSamples   = rttFilled   ? rttRing   : rttRing.slice(0, rttIdx);
+    const avgInfer = inferSamples.reduce((s, v) => s + v, 0) / Math.max(1, inferSamples.length);
+    const maxInfer = inferSamples.length ? Math.max(...inferSamples) : 0;
+    const avgRtt   = rttSamples.reduce((s, v) => s + v, 0) / Math.max(1, rttSamples.length);
+    inferAvg.textContent = avgInfer.toFixed(1);
+    inferMax.textContent = maxInfer.toFixed(1);
+    rttAvg.textContent   = avgRtt.toFixed(1);
+}
+
+function drawOverlay() {
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!lastResult) return;
+    const { landmarks, blinkL, blinkR } = lastResult;
+    if (!landmarks) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.font = '20px sans-serif';
+        ctx.fillText('no face', 14, 28);
+        return;
+    }
+    const W = overlay.width, H = overlay.height;
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (let i = 0; i < landmarks.length / 3; i++) {
+        const px = landmarks[3*i] * W, py = landmarks[3*i + 1] * H;
+        if (px < xMin) xMin = px; if (px > xMax) xMax = px;
+        if (py < yMin) yMin = py; if (py > yMax) yMax = py;
+    }
+    ctx.strokeStyle = 'rgba(201,100,66,0.85)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
+
+    ctx.strokeStyle = 'rgba(95,194,124,0.9)';
+    ctx.lineWidth = 1.5;
+    for (const ring of [RIGHT_EYE, LEFT_EYE]) {
+        ctx.beginPath();
+        for (let i = 0; i < ring.length; i++) {
+            const idx = ring[i];
+            const px = landmarks[3*idx] * W, py = landmarks[3*idx + 1] * H;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.closePath(); ctx.stroke();
+    }
+
+    // Update prob bars (blink → open prob)
+    paintEye(1 - blinkR, 'R');
+    paintEye(1 - blinkL, 'L');
+}
+
+async function init() {
+    startBtn.disabled = true;
+    initLog.innerHTML = '';
+
+    try {
+        // ── Spin up the worker (classic, NOT module — see worker file header) ──
+        logInit('booting worker…');
+        worker = new Worker('./face_landmarker.worker.js');
+
+        worker.addEventListener('message', (ev) => {
+            const m = ev.data;
+            if (m.type === 'initDone') {
+                logInit(`✓ Face Landmarker ready in worker (${m.ms.toFixed(0)} ms)`);
+                openCamera();
+            } else if (m.type === 'result' || m.type === 'noFace') {
+                inFlight = false;
+                const rtt = performance.now() - pendingPostT;
+                inferRing[inferIdx] = m.time;
+                inferIdx = (inferIdx + 1) % inferRing.length;
+                if (inferIdx === 0) inferFilled = true;
+                rttRing[rttIdx] = rtt;
+                rttIdx = (rttIdx + 1) % rttRing.length;
+                if (rttIdx === 0) rttFilled = true;
+                if (m.type === 'result') {
+                    lastResult = m;   // stash for renderer
+                } else {
+                    lastResult = { landmarks: null, blinkL: 0.5, blinkR: 0.5 };
+                }
+                updateLatencyUI();
+                drawOverlay();
+                frameCount++;
+                frameLog.textContent = `received ${frameCount} results · last call ${m.time.toFixed(1)} ms · last RTT ${rtt.toFixed(1)} ms`;
+            } else if (m.type === 'error') {
+                inFlight = false;
+                logInitErr(`worker error: ${m.msg}`);
+                console.error('[worker]', m);
+            }
+        });
+        worker.addEventListener('error', (e) => {
+            logInitErr(`worker fatal: ${e.message}`);
+            console.error('[worker error event]', e);
+        });
+
+        logInit('initializing Face Landmarker inside worker…');
+        worker.postMessage({
+            type: 'init',
+            payload: { wasmBase: WASM_BASE, modelPath: new URL(MODEL_PATH, location.href).href, delegate: 'GPU' },
+        });
+    } catch (err) {
+        logInitErr(err.message);
+        startBtn.disabled = false;
+    }
+}
+
+async function openCamera() {
+    try {
+        logInit('opening camera…');
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+        });
+        videoEl.srcObject = stream;
+        await new Promise(r => videoEl.onloadeddata = r);
+        await videoEl.play();
+        overlay.width  = videoEl.videoWidth;
+        overlay.height = videoEl.videoHeight;
+        logInit(`✓ camera ${videoEl.videoWidth}×${videoEl.videoHeight}`);
+
+        running = true;
+        nextDueAt = performance.now();
+        scheduleNext();
+    } catch (err) {
+        logInitErr(`camera: ${err.message}`);
+        startBtn.disabled = false;
+    }
+}
+
+async function scheduleNext() {
+    if (!running) return;
+    const now = performance.now();
+    const target = +targetHz.value || 10;
+    const periodMs = 1000 / target;
+    const wait = Math.max(0, nextDueAt - now);
+    if (wait > 0) {
+        setTimeout(scheduleNext, wait);
+        return;
+    }
+    nextDueAt = now + periodMs;
+    if (!inFlight) await sendFrame();
+    requestAnimationFrame(scheduleNext);   // keep loop alive without busy-waiting
+}
+
+async function sendFrame() {
+    if (!worker || !videoEl.srcObject) return;
+    if (videoEl.readyState < 2 /* HAVE_CURRENT_DATA */) return;
+    inFlight = true;
+    let bitmap;
+    try {
+        bitmap = await createImageBitmap(videoEl);
+    } catch (err) {
+        inFlight = false;
+        return;
+    }
+    pendingPostT = performance.now();
+    worker.postMessage(
+        { type: 'frame', payload: { bitmap, timestamp: pendingPostT } },
+        [bitmap],
+    );
+}
+
+startBtn.addEventListener('click', init);
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden && running) {
+        running = false;
+        if (videoEl.srcObject) {
+            for (const t of videoEl.srcObject.getTracks()) t.stop();
+            videoEl.srcObject = null;
+        }
+        worker?.terminate(); worker = null;
+        startBtn.disabled = false;
+        startBtn.textContent = 'Restart';
+    }
+});
+</script>
+</body>
+</html>

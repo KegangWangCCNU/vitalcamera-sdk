@@ -146,7 +146,34 @@
         .eye-side-label { font-size: 11px; color: var(--text-tertiary); width: 14px; }
         .eye-side-prob { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-secondary); width: 32px; }
         .eye-state-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0; }
-        #eyeStateTime { font-size: 12px; color: var(--text-tertiary); margin-left: auto; }
+        /* ── Eyes + Mouth side-by-side row ── */
+        #eye-mouth-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        #eye-mouth-row > #eye-state-panel,
+        #eye-mouth-row > #mouth-panel { min-width: 0; }
+        @media (max-width: 800px) {
+            #eye-mouth-row { grid-template-columns: 1fr; }
+        }
+
+        /* ── Mouth state (jaw open / speaking) ── */
+        #mouth-panel {
+            background: #f2eee6; border-radius: var(--radius-sm); padding: 8px 10px;
+            display: flex; align-items: center; gap: 12px;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
+        }
+        .mouth-bar-wrap { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+        .mouth-bar-track {
+            flex: 1; height: 8px; border-radius: 4px;
+            background: rgba(0,0,0,0.06); overflow: hidden;
+        }
+        .mouth-bar-fill { height: 100%; background: var(--accent); transition: width 0.12s; }
+        .mouth-prob { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-secondary); width: 36px; text-align: right; }
+        .speak-pill {
+            font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 500;
+            background: rgba(0,0,0,0.06); color: var(--text-secondary); flex-shrink: 0;
+            transition: background 0.2s, color 0.2s;
+            width: 64px; text-align: center;
+        }
+        .speak-pill.on { background: rgba(47,158,68,0.18); color: var(--ok, #2f9e44); }
 
         /* ── Gaze & Head ── */
         #gaze-head-row { display: flex; gap: 8px; }
@@ -176,23 +203,37 @@
         .gaze-label { color: var(--text-tertiary); font-size: 12px; }
         .gaze-val { font-weight: 500; font-size: 13px; font-variant-numeric: tabular-nums; }
 
-        /* ── Emotion ── */
+        /* ── Emotion (vertical bars, compact) ── */
         #emotion-panel {
             background: linear-gradient(180deg, #f5f1ea 0%, #f0ebe3 100%);
-            border-radius: var(--radius-sm); padding: 10px 12px;
-            display: flex; flex-direction: column; gap: 2px; flex: 1; justify-content: center;
+            border-radius: var(--radius-sm); padding: 8px 10px;
+            display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
             box-shadow: inset 0 1px 2px rgba(0,0,0,0.03);
         }
-        #emotion-top { display: flex; align-items: center; gap: 8px; padding: 2px 0 6px; }
-        #emotionEmoji { font-size: 24px; line-height: 1; }
-        #emotionLabel { font-weight: 500; font-size: 15px; flex: 1; }
-        #emotionConf { font-size: 13px; color: var(--text-secondary); }
-        #emotionTime { font-size: 12px; color: var(--text-tertiary); }
-        .emo-bar-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-        .emo-bar-name { font-size: 12px; width: 68px; text-align: right; flex-shrink: 0; color: var(--text-secondary); }
-        .emo-bar-track { flex: 1; height: 5px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden; }
-        .emo-bar-fill { height: 100%; width: 0%; border-radius: 3px; transition: width 0.2s ease; }
-        .emo-bar-pct { font-size: 12px; width: 34px; text-align: right; flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+        #emotion-top { display: flex; align-items: center; gap: 8px; padding: 2px 0 4px; }
+        #emotionEmoji { font-size: 22px; line-height: 1; }
+        #emotionLabel { font-weight: 500; font-size: 14px; flex: 1; }
+        #emotionConf { font-size: 12px; color: var(--text-secondary); }
+        #emotionTime { font-size: 11px; color: var(--text-tertiary); }
+        #emo-cols {
+            display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px;
+            height: 64px;
+        }
+        .emo-col { display: flex; flex-direction: column; min-width: 0; align-items: center; }
+        .emo-col-track {
+            flex: 1; width: 100%;
+            background: rgba(0,0,0,0.06); border-radius: 3px;
+            position: relative; overflow: hidden;
+        }
+        .emo-col-fill {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            height: 0%; transition: height 0.2s ease;
+            border-radius: 3px 3px 0 0;
+        }
+        .emo-col-name {
+            font-size: 10px; color: var(--text-secondary);
+            margin-top: 3px; line-height: 1; letter-spacing: 0.02em;
+        }
 
         /* ── BVP Waveform ── */
         #wave-frame {
@@ -326,19 +367,28 @@
                     </div>
                 </div>
             </div>
-            <div id="eye-state-panel">
-                <span class="eye-state-title">Eyes</span>
-                <div class="eye-side">
-                    <span class="eye-side-label">L</span>
-                    <span class="eye-pill" id="eyePillLeft"></span>
-                    <span class="eye-side-prob" id="eyeProbLeft">--</span>
+            <div id="eye-mouth-row">
+                <div id="eye-state-panel">
+                    <span class="eye-state-title">Eyes</span>
+                    <div class="eye-side">
+                        <span class="eye-side-label">L</span>
+                        <span class="eye-pill" id="eyePillLeft"></span>
+                        <span class="eye-side-prob" id="eyeProbLeft">--</span>
+                    </div>
+                    <div class="eye-side">
+                        <span class="eye-side-label">R</span>
+                        <span class="eye-pill" id="eyePillRight"></span>
+                        <span class="eye-side-prob" id="eyeProbRight">--</span>
+                    </div>
                 </div>
-                <div class="eye-side">
-                    <span class="eye-side-label">R</span>
-                    <span class="eye-pill" id="eyePillRight"></span>
-                    <span class="eye-side-prob" id="eyeProbRight">--</span>
+                <div id="mouth-panel">
+                    <span class="eye-state-title">Mouth</span>
+                    <div class="mouth-bar-wrap">
+                        <div class="mouth-bar-track"><div class="mouth-bar-fill" id="mouthBar" style="width:0%"></div></div>
+                        <span class="mouth-prob" id="mouthProb">--</span>
+                    </div>
+                    <span class="speak-pill" id="speakPill">silent</span>
                 </div>
-                <span id="eyeStateTime">--</span>
             </div>
             <div id="emotion-panel">
                 <div id="emotion-top">
@@ -347,14 +397,16 @@
                     <span id="emotionConf"></span>
                     <span id="emotionTime"></span>
                 </div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Anger</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_0" style="background:#c96442"></div></div><span class="emo-bar-pct" id="emoPct_0">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Contempt</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_1" style="background:#c9964a"></div></div><span class="emo-bar-pct" id="emoPct_1">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Disgust</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_2" style="background:#8b7bb5"></div></div><span class="emo-bar-pct" id="emoPct_2">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Fear</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_3" style="background:#5a9e6f"></div></div><span class="emo-bar-pct" id="emoPct_3">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Happiness</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_4" style="background:#c9a84a"></div></div><span class="emo-bar-pct" id="emoPct_4">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Neutral</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_5" style="background:#5a8fa8"></div></div><span class="emo-bar-pct" id="emoPct_5">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Sadness</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_6" style="background:#5a9e8f"></div></div><span class="emo-bar-pct" id="emoPct_6">0%</span></div>
-                <div class="emo-bar-row"><span class="emo-bar-name">Surprise</span><div class="emo-bar-track"><div class="emo-bar-fill" id="emoBar_7" style="background:#b5637a"></div></div><span class="emo-bar-pct" id="emoPct_7">0%</span></div>
+                <div id="emo-cols">
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_0" style="background:#c96442"></div></div><div class="emo-col-name">Ang</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_1" style="background:#c9964a"></div></div><div class="emo-col-name">Con</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_2" style="background:#8b7bb5"></div></div><div class="emo-col-name">Dis</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_3" style="background:#5a9e6f"></div></div><div class="emo-col-name">Fea</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_4" style="background:#c9a84a"></div></div><div class="emo-col-name">Hap</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_5" style="background:#5a8fa8"></div></div><div class="emo-col-name">Neu</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_6" style="background:#5a9e8f"></div></div><div class="emo-col-name">Sad</div></div>
+                    <div class="emo-col"><div class="emo-col-track"><div class="emo-col-fill" id="emoBar_7" style="background:#b5637a"></div></div><div class="emo-col-name">Sur</div></div>
+                </div>
             </div>
             <div id="wave-frame">
                 <button id="largeStartBtn" disabled>Loading System...</button>
@@ -472,9 +524,8 @@ function updateEmotionDisplay() {
     document.getElementById('emotionLabel').textContent = EMOTION_LABELS[topIdx];
     document.getElementById('emotionConf').textContent = (smoothedEmotionProbs[topIdx] * 100).toFixed(0) + '%';
     for (let i = 0; i < smoothedEmotionProbs.length; i++) {
-        const bar = document.getElementById('emoBar_' + i), pct = document.getElementById('emoPct_' + i);
-        if (bar) bar.style.width = (smoothedEmotionProbs[i] * 100).toFixed(1) + '%';
-        if (pct) pct.textContent = (smoothedEmotionProbs[i] * 100).toFixed(0) + '%';
+        const bar = document.getElementById('emoBar_' + i);
+        if (bar) bar.style.height = (smoothedEmotionProbs[i] * 100).toFixed(1) + '%';
     }
 }
 
@@ -568,6 +619,13 @@ async function init() {
         canvases: { bvp: plotCanvas, trend: trendCanvas },
         modelBasePath: '../models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
+        emotionCalibration: {
+            // Dynamic EMA: a sustained expression slides the baseline toward
+            // those logits with 5 s half-life. Calibration re-centres the
+            // result on Neutral, so what the user sees is "deviation from
+            // your typical resting expression" rather than absolute label.
+            dynamic: { halfLifeMs: 5000 },
+        },
     });
 
     await adapter.init();
@@ -587,7 +645,16 @@ async function init() {
     });
 
     // ── HRV (panel only shows RMSSD; SAVE keeps all fields) ──
+    // The 'hrv' event always fires on cadence: when rmssd is null it means
+    // the current window was rejected (low SQI, warm-up, or >50% RR drop
+    // rate). Clear the panel display so the user doesn't think a stale
+    // value is still live; the reject reason is in `e.reject`.
     vc.on('hrv', (e) => {
+        if (e.rmssd == null) {
+            elRmssd.textContent = '--';
+            // Don't write rejected windows into the SAVE log.
+            return;
+        }
         hrvLog.push([Date.now(), e.rmssd, e.sdnn, e.meanRR, e.n]);
         elRmssd.textContent = e.rmssd.toFixed(1);
     });
@@ -624,7 +691,7 @@ async function init() {
     });
 
     // ── Eye state (OCEC) ──
-    vc.on('eyestate', ({ left, right, time }) => {
+    vc.on('eyestate', ({ left, right }) => {
         const pillL = document.getElementById('eyePillLeft');
         const pillR = document.getElementById('eyePillRight');
         const probL = document.getElementById('eyeProbLeft');
@@ -635,10 +702,19 @@ async function init() {
         pillR.classList.toggle('closed', !right.open);
         probL.textContent = left.prob.toFixed(2);
         probR.textContent = right.prob.toFixed(2);
-        if (time != null) document.getElementById('eyeStateTime').textContent = time.toFixed(1) + 'ms';
         // Pull boxes off the adapter so face event can draw them
         lastEyeBoxes = adapter._lastEyeBoxes || null;
         if (isRunning) eyeLog.push([Date.now(), left.prob, right.prob, left.open ? 1 : 0, right.open ? 1 : 0]);
+    });
+
+    // ── Mouth (jawOpen + speaking heuristic from FaceLandmarker blendshape) ──
+    vc.on('mouth', ({ jawOpen, speaking }) => {
+        const pct = (jawOpen * 100).toFixed(0);
+        document.getElementById('mouthBar').style.width = pct + '%';
+        document.getElementById('mouthProb').textContent = jawOpen.toFixed(2);
+        const pill = document.getElementById('speakPill');
+        pill.textContent = speaking ? 'speaking' : 'silent';
+        pill.classList.toggle('on', speaking);
     });
 
     // ── Beat ──
@@ -661,8 +737,35 @@ async function init() {
         }
         previewCtx.drawImage(videoEl, 0, 0, previewCanvas.width, previewCanvas.height);
         overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        if (detected && box) {
+        // Face / eye boxes — prefer Face Landmarker landmarks when available
+        // (anatomically tight, no padding). BlazeFace bbox is a fallback for
+        // the first 1–2 s while Face Landmarker is still booting.
+        const lms = adapter._lastFaceLandmarks;
+        const W = overlayCanvas.width, H = overlayCanvas.height;
+
+        // ── Face bbox: min/max of all 478 landmarks, then shrink width 10% ──
+        // The full-set min/max naturally extends to the temples (points 234,
+        // 454, …), which sits a bit beyond the visible cheek line in 2D
+        // projection. We just trim 10 % off each lateral side so the bbox
+        // snugs into the visible face surface. Y axis is left as-is.
+        if (lms && lms.length >= 3) {
+            let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+            for (let i = 0; i < lms.length; i += 3) {
+                const px = lms[i] * W, py = lms[i + 1] * H;
+                if (px < xMin) xMin = px;
+                if (px > xMax) xMax = px;
+                if (py < yMin) yMin = py;
+                if (py > yMax) yMax = py;
+            }
+            const shrink = (xMax - xMin) * 0.03;
+            xMin += shrink;
+            xMax -= shrink;
             overlayCtx.strokeStyle = 'rgba(201,100,66,0.75)';
+            overlayCtx.lineWidth = 2;
+            overlayCtx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
+        } else if (detected && box) {
+            // Fallback: BlazeFace bbox (loose, includes hair).
+            overlayCtx.strokeStyle = 'rgba(201,100,66,0.45)';
             overlayCtx.lineWidth = 2;
             overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
         }

@@ -2,22 +2,30 @@
  * @file eye_state.worker.js
  * @description Eye open/closed classification Web Worker for the VitalCamera SDK.
  *
- * Runs the OCEC (Open-Closed Eyes Classification) model — a 112 KB sigmoid
+ * Runs the OCEC (Open-Closed Eyes Classification) model — a tiny sigmoid
  * classifier that takes an eye crop and returns probability of being open.
  *
- * Model: PINTO0309/OCEC variant `p`, ONNX → TFLite via onnx2tf.
- *   Input :  [N, 24, 40, 3]  NHWC float32, RGB pixels in [0, 1]  (no mean/std)
- *   Output:  [N]              float32 sigmoid (0 = closed, 1 = open)
+ * Model: PINTO0309/OCEC variant `p`, ONNX → TFLite (batch=1) via onnx2tf.
+ *   Input :  [1, 24, 40, 3]  NHWC float32, RGB pixels in [0, 1]  (no mean/std)
+ *   Output:  [1]              float32 sigmoid (0 = closed, 1 = open)
  *
- * The adapter sends both eyes per frame; this worker runs two batch=1
- * inferences sequentially (≈ 0.5 ms total on CPU) and returns both probabilities.
+ * The adapter packs N candidate crops per call (4 candidates × 2 eyes by default)
+ * and the worker runs them as a sequential loop of batch=1 inferences, returning
+ * one probability per crop. The downstream classifier in VitalCamera then
+ * reduces the per-eye candidate probs against a per-user rolling KL baseline.
+ *
+ * Why loop instead of a fixed batched model: each `model.run()` for this 112 KB
+ * net costs ~0.15 ms on modern CPUs, and a fixed-batch model only outperforms
+ * looping when XNNPACK can split work across threads — which requires the host
+ * page to be cross-origin-isolated (COOP/COEP). For a typical embedded SDK
+ * deployment that is uncertain, so we keep the simpler single-batch model.
  *
  * Message protocol (type / payload):
- *   -> init    { modelBuffer }                        Load the OCEC model
- *   <- initDone                                       Model ready
- *   -> run     { left, right }                        Two Float32Array(24*40*3)
- *   <- result  { leftProb, rightProb, time }          Sigmoid per eye, ms
- *   <- error   { msg }                                On any thrown error
+ *   -> init    { modelBuffer }                    Load the OCEC model
+ *   <- initDone                                   Model ready
+ *   -> run     { batch, n }                       batch = Float32Array(n*EYE_LEN)
+ *   <- result  { probs, time }                    Float32Array(n) sigmoids, ms
+ *   <- error   { msg }                            On any thrown error
  */
 
 /* ── LiteRT runtime (loaded dynamically from CDN) ── */
@@ -56,7 +64,7 @@ self.onmessage = async (e) => {
 /**
  * Initialize the OCEC model.
  * @param {Object} params
- * @param {ArrayBuffer} params.modelBuffer  OCEC `.tflite` (≈ 112 KB)
+ * @param {ArrayBuffer} params.modelBuffer  OCEC `.tflite` (batch=1)
  */
 async function handleInit({ modelBuffer }) {
     const litertModule = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
@@ -84,39 +92,42 @@ async function handleInit({ modelBuffer }) {
 }
 
 /**
- * Run OCEC on left and right eye crops sequentially.
+ * Run OCEC sequentially on N packed crops and return a probability for each.
+ *
  * @param {Object} params
- * @param {Float32Array} params.left   Left-eye crop, length 24*40*3, RGB [0,1]
- * @param {Float32Array} params.right  Right-eye crop, length 24*40*3, RGB [0,1]
+ * @param {Float32Array} params.batch  Length n*EYE_LEN, RGB [0,1] NHWC interleaved
+ * @param {number} params.n            Number of crops to evaluate
  */
-async function handleRun({ left, right }) {
+async function handleRun({ batch, n }) {
     if (!model) return;
-    if (!left || !right || left.length !== EYE_LEN || right.length !== EYE_LEN) {
-        self.postMessage({ type: 'error', msg: '[eye_state] invalid input length' });
+    if (!batch || !Number.isInteger(n) || n <= 0 || batch.length !== n * EYE_LEN) {
+        self.postMessage({
+            type: 'error',
+            msg: `[eye_state] invalid input: n=${n}, batch.length=${batch?.length}, expected ${n * EYE_LEN}`,
+        });
         return;
     }
+
     const start = performance.now();
+    const probs = new Float32Array(n);
 
-    const inL = new Tensor(left, [1, EYE_H, EYE_W, 3]);
-    const outsL = model.run([inL]);
-    inL.delete();
-    const leftProb = outsL[0].toTypedArray()[0];
-    outsL[0].delete();
-
-    const inR = new Tensor(right, [1, EYE_H, EYE_W, 3]);
-    const outsR = model.run([inR]);
-    inR.delete();
-    const rightProb = outsR[0].toTypedArray()[0];
-    outsR[0].delete();
+    for (let i = 0; i < n; i++) {
+        // Subarray view into the packed buffer — no copy.
+        const view = batch.subarray(i * EYE_LEN, (i + 1) * EYE_LEN);
+        const inT = new Tensor(view, [1, EYE_H, EYE_W, 3]);
+        const outs = model.run([inT]);
+        inT.delete();
+        probs[i] = outs[0].toTypedArray()[0];
+        outs[0].delete();
+    }
 
     const end = performance.now();
 
-    self.postMessage({
-        type: 'result',
-        payload: {
-            leftProb,
-            rightProb,
-            time: end - start,
-        }
-    });
+    self.postMessage(
+        {
+            type: 'result',
+            payload: { probs, time: end - start },
+        },
+        [probs.buffer],   // transfer to avoid copy
+    );
 }

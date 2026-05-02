@@ -206,7 +206,12 @@ function _runHrv(samples, dbg) {
     const rrClean = _filterCompensatingPairs(rrInRange);
     dbg.rrClean = rrClean.length;
     dbg.droppedTotal = rrPhys.length - rrClean.length;
+    dbg.dropRate = dbg.droppedTotal / rrPhys.length;
     if (rrClean.length < 5) { dbg.reject = 'too_few_after_compensating_pairs'; return null; }
+    // High rejection rate → window is too noisy to trust even if a few RRs
+    // survived. Threshold 0.5 = "more than half the physiologically-plausible
+    // RR intervals had to be discarded as outliers" → bail out.
+    if (dbg.dropRate > 0.5) { dbg.reject = 'high_rejection_rate'; return null; }
 
     let sumSqDiff = 0;
     for (let i = 1; i < rrClean.length; i++) { const d = rrClean[i] - rrClean[i - 1]; sumSqDiff += d * d; }

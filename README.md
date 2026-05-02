@@ -1,18 +1,19 @@
 # Vital Camera SDK
 
-Browser-based real-time physiological sensing — extract heart rate, HRV, emotion, gaze direction, and head pose from a standard webcam. No wearables needed.
+Browser-based real-time physiological sensing — extract heart rate, HRV, emotion, gaze, eye state, mouth (jawOpen + speaking), and head pose from a standard webcam. No wearables needed.
 
 **[Live Demo](https://kegangwangccnu.github.io/vitalcamera-sdk/examples/demo.html)** · **[Documentation](https://kegangwangccnu.github.io/vitalcamera-sdk/docs/)**
 
 ## Features
 
 - **Heart Rate (rPPG)** — remote photoplethysmography via face video using State Space Models
-- **HRV** — RMSSD and other heart rate variability metrics from BVP peak detection
-- **Emotion** — 8-class facial emotion recognition (EfficientNet-B0), with optional per-user calibration from a few face photos
-- **Gaze** — yaw/pitch eye direction estimation (MobileOne-S0)
-- **Eye State** — per-eye open/closed classification (OCEC, 2025)
-- **Head Pose** — yaw/pitch/roll from BlazeFace eye / nose / ear keypoints
-- **Pure browser** — runs entirely client-side with Web Workers and TFLite/LiteRT
+- **HRV** — RMSSD + SDNN from BVP peak detection, with reject-reason surfaced when the window is too noisy
+- **Emotion** — 8-class facial emotion recognition (EfficientNet-B0), with three calibration modes: per-user images, pre-computed baseline distribution, or runtime EMA drift
+- **Gaze** — yaw/pitch eye direction estimation (MobileOne-S0 / L2CS-Net), eye-state-gated, fed a tight Face-Landmarker-aligned face crop
+- **Eye State** — per-eye open/closed from MediaPipe Face Landmarker `eyeBlink` blendshapes (478-landmark mesh)
+- **Mouth** — `jawOpen` + speaking heuristic (rolling-variance) from the same Face Landmarker
+- **Head Pose** — yaw/pitch/roll from MediaPipe face landmarks
+- **Pure browser** — runs entirely client-side with Web Workers, TFLite/LiteRT, and MediaPipe tasks-vision
 
 ## Install
 
@@ -63,27 +64,36 @@ adapter.start();
 
 ### Personalize the emotion baseline (optional)
 
-Out of the box, emotion classification uses a built-in baseline tuned for Asian
-faces — Anger / Contempt / Disgust biases at rest are corrected automatically.
-For per-user accuracy, supply 2+ neutral-expression photos as base64 data URLs:
+Three independent calibration modes, all combinable. Out of the box (no
+config) the SDK uses a built-in baseline tuned for Asian faces — Anger /
+Contempt / Disgust biases at rest are corrected automatically.
 
 ```javascript
 const adapter = new BrowserAdapter({
     videoElement: document.getElementById('cam'),
     emotionCalibration: {
-        images: [
-            'data:image/jpeg;base64,/9j/4AAQ...',
-            'data:image/jpeg;base64,/9j/4AAQ...',
-        ],
+        // 1) per-user calibration from 2+ neutral-expression photos
+        images: ['data:image/jpeg;base64,/9j/4AAQ...', ...],
+
+        // 2) OR pre-computed 8-vector of raw logits (e.g. captured offline)
+        baseline: [3.2, 0.3, -3.9, -3.3, -3.2, 4.5, 4.4, -0.5],
+
+        // 3) AND/OR runtime EMA: the baseline drifts toward sustained
+        //    expressions with this half-life, so the visible signal becomes
+        //    "deviation from your typical expression". 5s is a comfortable
+        //    default — sustained smiles fade to Neutral over a few seconds.
+        dynamic: { halfLifeMs: 5000 },
     },
 });
 
-await adapter.init();   // calibration runs once during init, fully transparent
+await adapter.init();   // images + baseline applied at init, dynamic runs continuously
 ```
 
-The `'emotion'` event payload is identical with or without calibration —
-calibration happens silently inside the SDK. See
-[docs/configuration.md](docs/configuration.md#emotion-calibration) for details.
+`images` precedes `baseline` if both supplied; `dynamic` is independent of
+both. The `'emotion'` event payload is identical regardless of which modes
+are active. See
+[docs/configuration.md](docs/configuration.md#emotion-calibration) for the
+KL-blend math and details.
 
 ### Heart Rate Only (minimal resource usage)
 
@@ -133,19 +143,22 @@ Workers are loaded automatically via Blob URLs — no need to copy worker files 
 
 ```
 VitalCamera (core, DOM-free)
-  ├── inference_worker  →  rPPG SSM     →  BVP signal
-  ├── psd_worker        →  PSD model    →  peak frequency → HR
-  │                      └─ HRV pipeline →  RMSSD / SDNN
-  ├── emotion_worker    →  ENet-B0      →  8-class probs
-  ├── gaze_worker       →  MobileOne    →  yaw/pitch
-  ├── eye_state_worker  →  OCEC         →  per-eye open/closed
-  ├── plot_worker       →  OffscreenCanvas rendering
-  └── RealtimePeakDetector  →  per-beat events
+  ├── inference_worker     →  rPPG SSM            →  BVP signal
+  ├── psd_worker           →  PSD model           →  peak frequency → HR
+  │                         └─ HRV pipeline       →  RMSSD / SDNN
+  ├── emotion_worker       →  ENet-B0 + KL-blend  →  8-class probs (per-user / dynamic calibrated)
+  ├── gaze_worker          →  L2CS-Net MobileOne  →  yaw/pitch
+  ├── face_landmarker      →  MediaPipe Tasks     →  478 landmarks + 52 blendshapes (15 fps)
+  │                         ├─ eyeBlinkL/R        →  'eyestate' event
+  │                         └─ jawOpen + std      →  'mouth' event (jawOpen + speaking)
+  ├── plot_worker          →  OffscreenCanvas rendering
+  └── RealtimePeakDetector →  per-beat events
 
 BrowserAdapter (optional)
   ├── Camera management (managed mode)
-  ├── Face detection (MediaPipe FaceDetector)
+  ├── Face detection (MediaPipe FaceDetector — kept for face bbox)
   ├── Kalman-filtered face & eye boxes
+  ├── Face-Landmarker-aligned gaze crop
   ├── Head pose estimation
   └── iOS compatibility (playsinline)
 ```
@@ -157,10 +170,11 @@ BrowserAdapter (optional)
 | `heartrate` | `{ hr, sqi, psd, freq, peak, timestamp }` | ~2/s |
 | `bvp` | `{ value, timestamp, time }` | 30/s |
 | `beat` | `{ ibi, timestamp }` | per beat |
-| `hrv` | `{ rmssd, sdnn, meanRR, n, timestamp }` | ~1/s |
+| `hrv` | `{ rmssd, sdnn, meanRR, n, reject, timestamp }` — `rmssd:null` + `reject:'…'` when invalid | ~1/s |
 | `emotion` | `{ emotion, probs, time, timestamp }` | 2/s |
 | `gaze` | `{ yaw, pitch, confidence, time, timestamp }` | 5/s |
-| `eyestate` | `{ left:{prob,open}, right:{prob,open}, bothClosed, time, timestamp }` | 30/s |
+| `eyestate` | `{ left:{prob,open}, right:{prob,open}, bothClosed, time, timestamp }` | 15/s |
+| `mouth` | `{ jawOpen, jawStd, speaking, time, timestamp }` | 15/s |
 | `headpose` | `{ yaw, pitch, roll, normal, timestamp }` | 30/s |
 | `face` | `{ detected, box, keypoints, videoWidth, videoHeight, timestamp }` | 30/s |
 | `ready` | `{}` | once after init |
@@ -178,7 +192,8 @@ Models are **included** in the npm package and git repository under `models/`. T
 | psd | `psd_model.tflite` | Power spectral density |
 | emotion | `enet_b0_8_*.tflite` | Emotion classification (optional) |
 | gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional) |
-| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional) |
+| faceLandmarker | `face_landmarker.task` | MediaPipe Face Landmarker — 478 landmarks + blendshapes (eyestate + mouth) |
+| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional, ~112 KB) |
 
 ## Citations
 

@@ -38,23 +38,19 @@ Pass these inside `vitalcameraConfig`:
 ```javascript
 vitalcameraConfig: {
   // ── Feature toggles ──
-  enableEmotion:  true,       // Run emotion classification
-  enableGaze:     true,       // Run gaze estimation
-  enableEyeState: true,       // Run OCEC per-eye open/closed
-  enableHeadPose: true,       // Run head pose estimation
-  enableHrv:      true,       // Run HRV computation (in PSD worker)
+  enableEmotion: true,       // Run emotion classification
+  enableGaze: true,          // Run gaze estimation
+  enableHeadPose: true,      // Run head pose estimation
+  enableHrv: true,           // Run HRV computation
 
   // ── Thresholds ──
-  sqiThreshold:             0.38,    // SQI threshold for HR display
-  gazeConfidenceThreshold:  0.04,    // Min softmax peak to accept gaze
-  eyeStateThreshold:        0.5,     // p(open) >= threshold → "open"
-  gazeEyeOpenGateProb:      0.7,     // Skip gaze unless max(L,R) eye-prob ≥ this
-  hrvSqiThreshold:          0.6,     // Min SQI to admit a sample to the HRV buffer
+  sqiThreshold: 0.38,               // Signal quality threshold for HR display
+  gazeConfidenceThreshold: 0.04,    // Min softmax peak to accept gaze (blink filter)
 
   // ── HRV settings ──
-  hrvMinDuration:    15,      // Seconds of data before first HRV output
-  hrvMaxWindow:     120,      // Sliding window cap (seconds)
-  hrvUpdateInterval: 1000,    // Ms between HRV recalculations
+  hrvTargetFs: 200,          // Interpolation sample rate (Hz)
+  hrvMinDuration: 15,        // Min seconds of data before first HRV output
+  hrvUpdateInterval: 1000,   // Ms between HRV recalculations
 }
 ```
 
@@ -103,34 +99,7 @@ Seconds of accumulated BVP data required before the first HRV computation. Short
 
 #### `hrvUpdateInterval` (default: `1000`)
 
-Milliseconds between HRV recalculations. The HRV pipeline runs inside the
-PSD worker; the main thread just dispatches the current 2-minute sample
-buffer at this cadence.
-
-#### `hrvMaxWindow` (default: `120`)
-
-Sliding window cap in seconds — older BVP samples than this are evicted
-from the buffer. SDNN especially is sensitive to window length; 2 min
-matches short-term HRV literature norms.
-
-#### `hrvSqiThreshold` (default: `0.6`)
-
-Per-sample SQI gate — BVP samples whose latest SQI score is below this
-are NOT admitted into the HRV buffer. This is the only outlier filter
-at the sample level; the HRV pipeline does its own RR-interval
-filtering downstream.
-
-#### `eyeStateThreshold` (default: `0.5`)
-
-Probability cutoff for the public `open` boolean field on the
-`'eyestate'` event. Display-side decision; doesn't affect data.
-
-#### `gazeEyeOpenGateProb` (default: `0.7`)
-
-Stricter cutoff used to gate the gaze inference. When the latest
-max(L, R) eye-open probability is below this, gaze inference is
-skipped that frame — no `'gaze'` event fires, the consumer's Kalman
-filter just predicts forward without a measurement update.
+Milliseconds between HRV recalculations. The HRV pipeline (interpolation → peak detection → RR filtering → RMSSD) runs on every update.
 
 ---
 
@@ -138,7 +107,7 @@ filter just predicts forward without a measurement update.
 
 The 8-class emotion model has a known bias against neutral Asian male faces —
 without calibration, `Anger` / `Contempt` are over-predicted at rest. The SDK
-addresses this in two layers:
+exposes four levels:
 
 ### 1. Built-in default baseline (zero config)
 
@@ -146,54 +115,89 @@ If you don't pass `emotionCalibration`, the SDK uses a **built-in baseline tuned
 for Asian faces**. This is applied automatically inside the emotion worker;
 no user code change needed. For most users this is enough.
 
-### 2. Per-user calibration via `emotionCalibration.images`
+### 2. Per-user calibration from images
 
-For best accuracy, supply 2+ photos of the user with a neutral expression. The
-SDK runs them through the emotion model once during `init()` and uses the
-averaged logits as that user's personal baseline:
+Supply 2+ photos of the user at rest. The SDK runs them through the model
+once during `init()` and uses the averaged logits as that user's baseline:
 
 ```javascript
-const adapter = new BrowserAdapter({
-    videoElement: document.getElementById('cam'),
-    emotionCalibration: {
-        images: [
-            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
-            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
-            'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
-        ],
-    },
-});
-
-await adapter.init();
-adapter.start();
+emotionCalibration: {
+    images: [
+        'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+        'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+        'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    ],
+}
 ```
 
-**Requirements:**
+**Requirements:** each entry is a data URL or any `<img>`-acceptable string;
+≥ 2 must be usable; 5–10 frontal, well-lit, neutral-expression photos give
+the sharpest result. If fewer than 2 are usable, init() proceeds with the
+default baseline and emits an `error` event with `source: 'emotionCalibration'`.
 
-- Each entry is a base64 data URL (or any string a `<img>` element accepts in `src`).
-- At least 2 images must be usable. Face detection runs on each — if BlazeFace
-  fails on an image, the SDK falls back to the full image. If fewer than 2 images
-  yield a usable crop, init() proceeds with the **default baseline** and an
-  `'error'` event is emitted with `source: 'emotionCalibration'`.
-- 5–10 frontal, well-lit, neutral-expression photos give the best result.
+### 3. Pre-computed baseline distribution
 
-**What happens under the hood (informational only):**
+Skip the image step and pass an 8-vector of raw logits directly:
 
-The SDK applies a KL-divergence-based blend internally, mixing 30% of the
-baseline distribution with 70% of a calibration-deviation distribution. None of
-this is exposed in the `'emotion'` event — payload is always
-`{ emotion, probs, time, timestamp }` regardless of which baseline mode is in
-use. Calibration is fully transparent to API consumers.
+```javascript
+emotionCalibration: {
+    baseline: [3.26, 0.31, -3.97, -3.30, -3.22, 4.53, 4.37, -0.53],
+    //          Anger Cont  Disg   Fear  Happ  Neut  Sad  Surp
+}
+```
+
+Useful for shipping a baseline you captured offline once for a known target
+population. If both `images` and `baseline` are supplied, `images` wins.
+
+### 4. Dynamic baseline (runtime EMA drift)
+
+```javascript
+emotionCalibration: {
+    dynamic: { halfLifeMs: 5000 },
+}
+```
+
+After every successful inference the worker EMA-folds the just-observed raw
+logits into the active baseline. The mixing coefficient is derived from a
+half-life so you can think in seconds:
+`alpha = 1 - 0.5^(dt / halfLifeMs)` per call. The semantic effect:
+
+- Sustained smile / frown → baseline drifts that direction → KL-blend
+  re-centres the result on Neutral. Held expressions fade to neutral over
+  ~halfLife seconds; only **deviations from your typical expression** light up.
+- Brief expressions (≪ halfLife) barely move the baseline.
+
+`dynamic` stacks on top of `images` / `baseline` — the EMA starts from
+whatever baseline you initialised with.
+
+### Stacking all three
+
+```javascript
+emotionCalibration: {
+    images:   [/* one-time per-user calibration at init */ ...],
+    baseline: [/* fallback if images can't be processed */ ...],
+    dynamic:  { halfLifeMs: 5000 },
+}
+```
+
+### Under the hood (informational only)
+
+KL-divergence-based blend internally:
+- `pCal[Neutral] = exp(-KL(pCur || pBase) / 0.6)` (the "still at rest" confidence)
+- positive KL contributions per class are redistributed to the non-Neutral classes
+- output = **0.2 × baseline + 0.8 × calibrated** (was 0.3/0.7 before 0.6.0)
+
+None of this surfaces in the `'emotion'` event — payload is always
+`{ emotion, probs, time, timestamp }` regardless of which mode is active.
 
 ### When NOT to calibrate
 
-- If you're building for a global / mixed-ethnicity audience and can't collect
-  per-user photos: just don't pass `emotionCalibration`. The default Asian baseline
-  is still better than no calibration for many users, and the SDK will work
-  out-of-the-box.
-- If you want to see raw model output for debugging: there's no public way to
-  disable calibration. Build against `src/workers/emotion.worker.js` directly
-  (out of scope for production use).
+- Mixed-ethnicity audience without per-user photos → just don't pass
+  `emotionCalibration`. The default Asian baseline is still safer than raw
+  logits for many users.
+- Debugging raw model output → no public way to disable calibration; build
+  against `src/workers/emotion.worker.js` directly (out of scope for
+  production use).
 
 ---
 
@@ -203,7 +207,6 @@ use. Calibration is fully transparent to API consumers.
 const models = await BrowserAdapter.loadModels('./models/', {
   emotion: false,
   gaze: false,
-  eyeState: false,
 });
 
 const adapter = new BrowserAdapter({
@@ -212,7 +215,6 @@ const adapter = new BrowserAdapter({
   vitalcameraConfig: {
     enableEmotion: false,
     enableGaze: false,
-    enableEyeState: false,
     enableHeadPose: false,
     enableHrv: false,
   },

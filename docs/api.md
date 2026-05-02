@@ -33,9 +33,13 @@ const adapter = new BrowserAdapter({
   canvases,              // { bvp: Canvas, trend: Canvas } — for built-in waveform plots
   faceDetector,          // async (source) => { box, keypoints } | null — custom detector
   manageCamera,          // boolean (default true) — auto-open camera
-  emotionCalibration,    // { images: string[] } — optional per-user emotion
-                         // baseline computed from base64 face photos
-                         // (see Configuration → Emotion calibration)
+  emotionCalibration,    // optional — see Configuration → Emotion calibration:
+                         // {
+                         //   images:   string[],            // 2+ base64 face photos
+                         //   baseline: number[],            // 8-d logits vector
+                         //   dynamic:  { halfLifeMs: number }
+                         // }
+                         // any combination is allowed
 });
 ```
 
@@ -171,16 +175,29 @@ vc.on('beat', ({ ibi, timestamp }) => {
 
 #### `'hrv'`
 
-Emitted when HRV metrics are computed (requires ≥15 seconds of clean signal, ~1/second after warm-up).
+Emitted on a 1 Hz cadence regardless of signal quality. When the current
+window can't yield a trustworthy estimate (low SQI, warm-up, too few RR
+intervals, > 50 % rejection rate, …) the event still fires, with `rmssd`
+null and a `reject` reason — so consumers can clear the display instead of
+holding a stale value.
 
 ```javascript
-vc.on('hrv', ({ rmssd, sdnn, meanRR, n, timestamp }) => {
-  // rmssd  — number, root mean square of successive RR differences (ms)
-  // sdnn   — number, standard deviation of NN intervals (ms)
-  // meanRR — number, mean RR interval over the window (ms)
-  // n      — number, count of RR intervals used in this estimate
+vc.on('hrv', ({ rmssd, sdnn, meanRR, n, reject, timestamp }) => {
+  if (rmssd == null) {
+    console.log('HRV unavailable:', reject);
+    return;
+  }
+  // rmssd  — root mean square of successive RR differences (ms)
+  // sdnn   — std-dev of NN intervals (ms)
+  // meanRR — mean RR interval over the window (ms)
+  // n      — count of RR intervals used in this estimate
 });
 ```
+
+`reject` is `null` when valid; otherwise one of:
+`low_sqi`, `warming_up`, `too_few_samples`, `too_few_peaks`, `rr_below_phys_min`,
+`too_few_after_outlier_filter`, `too_few_after_compensating_pairs`,
+`high_rejection_rate`.
 
 #### `'emotion'`
 
@@ -212,18 +229,35 @@ vc.on('gaze', ({ yaw, pitch, confidence, time, timestamp }) => {
 
 #### `'eyestate'`
 
-Emitted every frame with per-eye open/closed classification (OCEC model). When
-both eyes are simultaneously closed for one frame, this is treated as a blink
-candidate by the consumer (the SDK does not debounce blink detection).
+Emitted at the Face Landmarker rate (15 fps). Sourced from the
+`eyeBlinkLeft` / `eyeBlinkRight` blendshapes — `prob = 1 - blinkScore`.
+Typical values: open ≈ 0.9+, closed ≈ 0.4. The default
+`eyeStateThreshold = 0.5` cleanly separates them.
 
 ```javascript
 vc.on('eyestate', ({ left, right, bothClosed, time, timestamp }) => {
-  // left.prob   — number, P(open) for the left eye
-  // left.open   — boolean, left.prob > eyeStateThreshold (default 0.5)
-  // right.prob  — number, P(open) for the right eye
+  // left.prob   — P(open) for the left eye, [0, 1]
+  // left.open   — boolean, left.prob >= eyeStateThreshold (default 0.5)
+  // right.prob  — P(open) for the right eye
   // right.open  — boolean
-  // bothClosed  — boolean, !left.open && !right.open
-  // time        — number, inference time in ms (per-eye summed)
+  // bothClosed  — !left.open && !right.open
+  // time        — Face Landmarker inference duration this frame (ms)
+});
+```
+
+#### `'mouth'`
+
+Emitted at the Face Landmarker rate (15 fps). `jawOpen` is the raw
+blendshape (0 = closed, ≈0.4 = wide open / yawn). `speaking` is a boolean
+inferred from the rolling 1 s standard deviation of `jawOpen`: high std =
+articulating, low std = silent or sustained yawn / surprise.
+
+```javascript
+vc.on('mouth', ({ jawOpen, jawStd, speaking, time, timestamp }) => {
+  // jawOpen   — instantaneous jawOpen blendshape, [0, 1]
+  // jawStd    — std-dev of jawOpen over the last ~1 s
+  // speaking  — boolean, jawStd > 0.04
+  // time      — Face Landmarker inference duration this frame (ms)
 });
 ```
 

@@ -1,6 +1,6 @@
 # VitalCamera SDK
 
-Browser-based real-time physiological sensing — extract **heart rate**, **HRV**, **emotion**, **gaze**, **eye state**, and **head pose** from a standard webcam. No wearables, no server, no data upload.
+Browser-based real-time physiological sensing — extract **heart rate**, **HRV**, **emotion**, **gaze**, **eye state**, **mouth (jawOpen + speaking)**, and **head pose** from a standard webcam. No wearables, no server, no data upload.
 
 ## Why VitalCamera?
 
@@ -15,9 +15,10 @@ Browser-based real-time physiological sensing — extract **heart rate**, **HRV*
 |---------|--------|-------------|
 | Heart Rate | BPM value | 2/s |
 | HRV | RMSSD + SDNN (ms) | 1/s |
-| Emotion | 8-class probs (optional per-user calibration) | 2/s |
-| Gaze | Yaw & Pitch (degrees) | 5/s |
-| Eye State | Per-eye open/closed + blink | realtime |
+| Emotion | 8-class probs (image / distribution / dynamic-EMA calibration) | 2/s |
+| Gaze | Yaw & Pitch (degrees), Face-Landmarker-aligned crop | 5/s |
+| Eye State | Per-eye P(open) from MediaPipe `eyeBlink` blendshapes | 15/s |
+| Mouth | jawOpen + speaking heuristic (rolling-variance) | 15/s |
 | Head Pose | Yaw, Pitch, Roll | realtime |
 
 ## Quick links

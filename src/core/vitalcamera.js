@@ -57,7 +57,7 @@ const DEFAULTS = {
     sqiThreshold: 0.38,
     gazeConfidenceThreshold: 0.04,
     eyeStateThreshold: 0.5,         // p(open) >= threshold → "open" (used for the public 0/1 flag + display)
-    gazeEyeOpenGateProb: 0.7,       // skip gaze inference unless max(L,R) eye-open prob ≥ this
+    gazeEyeOpenGateProb: 0.6,       // skip gaze inference unless max(L,R) eye-open prob ≥ this
 };
 
 
@@ -140,7 +140,7 @@ class VitalCamera {
      * @param {number}  [config.sqiThreshold=0.38]
      * @param {number}  [config.gazeConfidenceThreshold=0.04]  Min softmax peak to accept gaze; lower → blink/closed eyes
      * @param {number}  [config.eyeStateThreshold=0.5]    p(open) >= threshold → "open" (display flag)
-     * @param {number}  [config.gazeEyeOpenGateProb=0.7]  Skip gaze inference unless max(L,R) eye-open prob ≥ this
+     * @param {number}  [config.gazeEyeOpenGateProb=0.6]  Skip gaze inference unless max(L,R) eye-open prob ≥ this
      */
     constructor(config = {}) {
         // Mix in EventEmitter
@@ -193,6 +193,16 @@ class VitalCamera {
         // consumed by the adapter to gate gaze inference when both eyes are closed.
         // null until the first eye-state result arrives.
         this._lastEyeState = null;  // { leftProb, rightProb, timestamp }
+
+        // Eye-state grace lock. The adapter sets this every time the motion
+        // gate transitions from "head moving" → "head stable" (and on the very
+        // first stable frame after construction). For 1 second after that, the
+        // emitted left/right probs are forced to 0.6 — same value the
+        // motion-active fast path uses — so the consumer sees one continuous
+        // "uncertain" span across the moving + stabilising window. 0.6 sits
+        // below the default gaze gate (0.7), so gaze inference is also skipped
+        // during the lock with no extra plumbing.
+        this._eyeBaselineLockedUntil = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -310,15 +320,15 @@ class VitalCamera {
      * @param {number}        frame.timestamp     ms timestamp
      * @param {Float32Array}  [frame.emotionInput] [1,224,224,3]
      * @param {Float32Array}  [frame.gazeInput]    [1,448,448,3]
-     * @param {Float32Array}  [frame.eyeLeftInput]   [1,24,40,3]  RGB/255, no mean/std
-     * @param {Float32Array}  [frame.eyeRightInput]  [1,24,40,3]  RGB/255, no mean/std
+     * @param {Float32Array}  [frame.eyeBatchInput]  [16,24,40,3]  RGB/255, no mean/std
+     *                                                (8 candidate crops per eye)
      * @param {Array}         [frame.faceKeypoints] 6 BlazeFace keypoints
      */
     processFrame(frame) {
         if (!this.isRunning) return;
 
         const { rppgInput, dtVal, timestamp, emotionInput, gazeInput,
-                eyeLeftInput, eyeRightInput, faceKeypoints } = frame;
+                eyeBatchInput, faceKeypoints } = frame;
 
         // Track smoothed dt for HR formula correction
         if (dtVal > 0) this._dval = dtVal;
@@ -345,11 +355,14 @@ class VitalCamera {
             });
         }
 
-        // Dispatch to eye-state worker (both eyes per call)
-        if (this.config.enableEyeState && eyeLeftInput && eyeRightInput && this._workers.eye_state) {
+        // Dispatch to eye-state worker (N candidates per eye × 2 eyes,
+        // looped batch=1 inferences inside the worker).
+        if (this.config.enableEyeState && eyeBatchInput && this._workers.eye_state) {
+            const EYE_LEN = 24 * 40 * 3;
+            const n = (eyeBatchInput.length / EYE_LEN) | 0;
             this._postIfReady('eye_state', {
                 type: 'run',
-                payload: { left: eyeLeftInput, right: eyeRightInput },
+                payload: { batch: eyeBatchInput, n },
             });
         }
 
@@ -479,26 +492,43 @@ class VitalCamera {
             });
         }
 
-        // Accumulate BVP samples for HRV (only if SQI is good enough). The
-        // pipeline itself runs in the PSD worker so the main thread just
-        // throttles a postMessage every hrvUpdateInterval ms.
-        if (this.config.enableHrv && this._lastSqi >= this.config.hrvSqiThreshold) {
-            this._bvpSamples.push({ t: timestamp, v: value });
+        // HRV cadence — runs every hrvUpdateInterval ms regardless of signal
+        // quality so consumers can clear the display when there's no usable
+        // estimate. Accumulation of BVP samples is still gated on SQI: bad
+        // samples never enter the buffer, but the cadence ticks regardless,
+        // and we emit a null `'hrv'` event with a `reject` reason when we
+        // can't (or shouldn't) compute one.
+        if (this.config.enableHrv) {
+            const goodSqi = this._lastSqi >= this.config.hrvSqiThreshold;
+            if (goodSqi) {
+                this._bvpSamples.push({ t: timestamp, v: value });
+            }
             const maxMs = this.config.hrvMaxWindow * 1000;
             while (this._bvpSamples.length > 1 &&
                    timestamp - this._bvpSamples[0].t > maxMs) {
                 this._bvpSamples.shift();
             }
+
             const since = timestamp - this._lastHrvSendTime;
-            const dur = this._bvpSamples.length > 1
-                ? (this._bvpSamples[this._bvpSamples.length - 1].t - this._bvpSamples[0].t) / 1000
-                : 0;
-            if (since >= this.config.hrvUpdateInterval && dur >= this.config.hrvMinDuration) {
+            if (since >= this.config.hrvUpdateInterval) {
                 this._lastHrvSendTime = timestamp;
-                this._postIfReady('psd', {
-                    type: 'hrv_run',
-                    payload: { samples: this._bvpSamples.slice() },
-                });
+                const dur = this._bvpSamples.length > 1
+                    ? (this._bvpSamples[this._bvpSamples.length - 1].t -
+                       this._bvpSamples[0].t) / 1000
+                    : 0;
+
+                if (!goodSqi) {
+                    // Current signal is too noisy — clear the consumer.
+                    this._emitHrvNull('low_sqi');
+                } else if (dur < this.config.hrvMinDuration) {
+                    // Not enough clean buffer yet (warm-up).
+                    this._emitHrvNull('warming_up');
+                } else {
+                    this._postIfReady('psd', {
+                        type: 'hrv_run',
+                        payload: { samples: this._bvpSamples.slice() },
+                    });
+                }
             }
         }
     }
@@ -571,18 +601,52 @@ class VitalCamera {
     }
 
     /**
-     * Handle the HRV worker's result. The worker emits the same shape every
-     * tick — when the gates reject the window, rmssd is null and we simply
-     * skip the event.
+     * Handle the HRV worker's result. Always emits an `'hrv'` event so the
+     * consumer never sees a stale value: if the worker rejected the window
+     * (`rmssd === null`), we emit nulls + a `reject` reason.
+     *
+     * Reject reasons (forwarded from the worker / synthesised here):
+     *   - `low_sqi`               : current SQI < `hrvSqiThreshold`
+     *   - `warming_up`            : clean BVP buffer < `hrvMinDuration`
+     *   - `too_few_samples`       : fewer than 30 BVP samples
+     *   - `too_few_peaks`         : peak detector found < 6 peaks
+     *   - `rr_below_phys_min`     : < 5 RR intervals in 300–2000 ms range
+     *   - `too_few_after_outlier_filter`
+     *   - `too_few_after_compensating_pairs`
+     *   - `high_rejection_rate`   : >50 % of phys-range RRs got dropped as outliers
+     *
      * @private
      */
     _onHrvResult(data) {
-        if (!data || data.rmssd == null || !Number.isFinite(data.rmssd)) return;
+        if (!data) return;
+        if (data.rmssd == null || !Number.isFinite(data.rmssd)) {
+            this._emitHrvNull(data.reject || 'invalid');
+            return;
+        }
         this.emit('hrv', {
-            rmssd: data.rmssd,
-            sdnn: data.sdnn,
+            rmssd:  data.rmssd,
+            sdnn:   data.sdnn,
             meanRR: data.meanRR,
-            n: data.n,
+            n:      data.n,
+            reject: null,
+            timestamp: Date.now(),
+        });
+    }
+
+    /**
+     * Emit an `'hrv'` event with all metric fields nulled out and a `reject`
+     * string so consumers can clear their display. Used both upstream
+     * (low-SQI / warm-up) and downstream (worker gate failure).
+     * @param {string} reject  Why the window was rejected.
+     * @private
+     */
+    _emitHrvNull(reject) {
+        this.emit('hrv', {
+            rmssd:  null,
+            sdnn:   null,
+            meanRR: null,
+            n:      0,
+            reject,
             timestamp: Date.now(),
         });
     }
@@ -596,20 +660,63 @@ class VitalCamera {
      * @private
      */
     _onEyeStateResult(data) {
-        const { leftProb, rightProb, time } = data;
-        if (leftProb == null || rightProb == null) return;
+        const { time } = data;
+        const now = Date.now();
+        let leftProb, rightProb;
+
+        if (data.probs) {
+            // Loop-mode: 2 sigmoid outputs (probs[0]=right, probs[1]=left).
+            // Raw OCEC output is the answer — no rolling baseline, no KL.
+            const probs = data.probs;
+            if (probs.length !== 2) return;
+            // 1-second grace lock after motion ends (or after init): force
+            // 0.6 instead of the raw output, so the user-visible signal stays
+            // in "uncertain" until the head settles.
+            if (now < this._eyeBaselineLockedUntil) {
+                rightProb = 0.6;
+                leftProb  = 0.6;
+            } else {
+                rightProb = probs[0];
+                leftProb  = probs[1];
+            }
+        } else if (data.leftProb != null && data.rightProb != null) {
+            // Motion-gate fallback (adapter-injected neutral 0.6).
+            leftProb  = data.leftProb;
+            rightProb = data.rightProb;
+        } else {
+            return;
+        }
+
         // Cache for adapter-side consumers (e.g. gaze gating)
-        this._lastEyeState = { leftProb, rightProb, timestamp: Date.now() };
-        const t = this.config.eyeStateThreshold;
-        const left  = { prob: leftProb,  open: leftProb  >= t };
-        const right = { prob: rightProb, open: rightProb >= t };
+        this._lastEyeState = { leftProb, rightProb, timestamp: now };
+
+        const th = this.config.eyeStateThreshold;
+        const left  = { prob: leftProb,  open: leftProb  >= th };
+        const right = { prob: rightProb, open: rightProb >= th };
+
         this.emit('eyestate', {
             left,
             right,
             bothClosed: !left.open && !right.open,
             time,
-            timestamp: Date.now(),
+            timestamp: now,
         });
+    }
+
+    /**
+     * Start a 1-second grace lock on the eye-state output.
+     *
+     * Called by the adapter on every motion-gate clear (transition from
+     * "head moving" → "head stable") and once on the first stable frame
+     * after construction. While the grace lock is active `_onEyeStateResult`
+     * returns the neutral 0.6, so the consumer sees a single continuous
+     * "uncertain" span across motion + stabilisation, and gaze inference
+     * (gated on eye-prob ≥ 0.7) is automatically skipped.
+     *
+     * @private
+     */
+    _resetEyeBaseline() {
+        this._eyeBaselineLockedUntil = Date.now() + 1_000;
     }
 
     // -----------------------------------------------------------------------
@@ -673,6 +780,15 @@ class VitalCamera {
      */
     _setEmotionBaseline(baselineLogits) {
         this._postIfReady('emotion', { type: 'setBaseline', payload: { baselineLogits } });
+    }
+
+    /**
+     * @internal — used by BrowserAdapter to enable / disable dynamic EMA
+     * baseline updates inside the emotion worker.
+     * @param {number|null} halfLifeMs  >0 ms → enable; null/0 → disable.
+     */
+    _setEmotionDynamic(halfLifeMs) {
+        this._postIfReady('emotion', { type: 'setDynamic', payload: { halfLifeMs } });
     }
 
     /**

@@ -15,12 +15,13 @@
 
 /** Map of worker name → filename. */
 const WORKER_FILES = {
-    inference: 'inference.worker.js',
-    psd:       'psd.worker.js',
-    emotion:   'emotion.worker.js',
-    gaze:      'gaze.worker.js',
-    eye_state: 'eye_state.worker.js',
-    plot:      'plot.worker.js',
+    inference:        'inference.worker.js',
+    psd:              'psd.worker.js',
+    emotion:          'emotion.worker.js',
+    gaze:             'gaze.worker.js',
+    eye_state:        'eye_state.worker.js',
+    plot:             'plot.worker.js',
+    face_landmarker:  'face_landmarker.worker.js',
 };
 
 /** Derive the workers directory from this module's own URL. */

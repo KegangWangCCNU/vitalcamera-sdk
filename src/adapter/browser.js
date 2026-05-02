@@ -43,12 +43,16 @@ const EYE_H        = 24;   // OCEC input height (matches model)
  *
  * Why inter-eye distance and not face-bbox width: the BlazeFace face box can be
  * loose (especially with hair / fringe), making `face.w * fraction` unreliable.
- * Inter-eye distance is anatomically tight: a human eye width is roughly
- * 0.45 * inter-eye-distance, so 0.55 gives a small margin around the outer
- * canthi while keeping the eye filling most of the 40x24 OCEC input — which
- * is what the model was trained on (tight eye crops from a wholebody detector).
+ *
+ * 0.32 was chosen empirically against OCEC's training-time crops: the upstream
+ * wholebody34 detector outputs tight bounding boxes around the visible eye
+ * fissure (no margin), which anatomically corresponds to ≈ 0.30·iod. Earlier
+ * versions used 0.55 here, which over-included eyebrow / skin and pushed the
+ * model out of distribution — small faces (iod ≤ 50 px) routinely returned
+ * confident-but-wrong probabilities. At 0.32 the eye fills the 40×24 input
+ * the way the model expects.
  */
-const EYE_BOX_WFRAC_IOD = 0.55;
+const EYE_BOX_WFRAC_IOD = 0.32;
 
 /**
  * Per-frame motion gate for eye-state. Computed as max(|dKpL|, |dKpR|) / iod —
@@ -57,21 +61,34 @@ const EYE_BOX_WFRAC_IOD = 0.55;
  * too fast for the crop to be reliable.
  *
  * Behaviour when triggered: skip the OCEC inference and synthesise a "neutral"
- * eyestate with prob = EYE_MOTION_NEUTRAL_PROB. The two existing eye-state
- * thresholds make this convenient — 0.6 sits between them:
- *   - eyeStateThreshold      = 0.5  → 0.6 ≥ 0.5 → "open" (display + CSV)
- *                                     so no spurious blink appears on screen
- *   - gazeEyeOpenGateProb    = 0.7  → 0.6 < 0.7 → gaze stays gated off
- *                                     so gaze isn't updated with stale data
+ * eyestate with prob = EYE_MOTION_NEUTRAL_PROB. 0.55 sits between the two
+ * downstream thresholds:
+ *   - eyeStateThreshold      = 0.5   → 0.55 ≥ 0.5 → "open" (display + CSV)
+ *                                      so no spurious blink appears on screen
+ *   - gazeEyeOpenGateProb    = 0.6   → 0.55 < 0.6 → gaze gated off
+ *                                      so gaze isn't updated with stale data
  *
  * 0.10 lets normal talking-head movement through (~3-5%/frame) and triggers
  * on brisk turns (≥10°/frame ≈ 10-15%/frame).
  */
 const EYE_MOTION_GATE = 0.10;
-const EYE_MOTION_NEUTRAL_PROB = 0.6;
+const EYE_MOTION_NEUTRAL_PROB = 0.55;
 
 /* ── Face bounding box padding factor ── */
 const FACE_PAD = 0.25;
+
+/**
+ * Process-noise for the face / eye bounding-box Kalman filters.
+ *
+ * Default in `KalmanFilter1D` is 1e-2 (paired with measurementNoise=5e-1),
+ * tuned originally for noisy BlazeFace short-range detections. Face Landmarker
+ * gives much more stable per-frame coordinates, so we bump processNoise 5×
+ * to `5e-2` — the filter trusts new measurements more aggressively, the box
+ * keeps up with fast head motion instead of trailing.
+ */
+const KF_BOX_Q = 5e-2;
+
+/* ── Eye-state inference: one crop per eye, raw OCEC sigmoid as the answer. ── */
 
 /**
  * Crop a face region from a canvas context, resize it to the target
@@ -284,6 +301,14 @@ export default class BrowserAdapter {
         /** @private Previous-frame eye keypoints (px) for motion-gate computation */
         this._lastEyeKpL = null;
         this._lastEyeKpR = null;
+        /**
+         * @private
+         * Was the motion gate active on the previous frame? Initial value is
+         * `true` so the very first stable frame triggers `_resetEyeBaseline()`
+         * — this seeds the 1s grace lock at startup, treating boot as if
+         * motion had just ended.
+         */
+        this._eyeMotionWasActive = true;
 
         /** @private 30fps frame throttle (matching original FacePhys) */
         this._frameInterval = 1000 / 30;
@@ -295,6 +320,40 @@ export default class BrowserAdapter {
 
         /** @private trend update throttle (1 update/sec like original) */
         this._lastTrendUpdateTime = 0;
+
+        /**
+         * @private
+         * Face Landmarker (MediaPipe Face Mesh + Blendshapes) state.
+         * Runs in its own worker at `_fmIntervalMs` Hz, non-blocking — if a
+         * frame is in flight when the next tick comes around we just skip it,
+         * so a slow device that takes 200 ms per inference effectively runs
+         * Face Landmarker at 5 fps without backing up the camera loop.
+         *
+         * Outputs the SDK consumes:
+         *   blinkL / blinkR  → ARKit-style blendshape scores [0=open, 1=closed].
+         *                      We feed `prob_open = 1 - blinkX` into the existing
+         *                      `_onEyeStateResult` path. For a typical user,
+         *                      open ≈ 0.9+ and fully closed ≈ 0.4 — i.e. the
+         *                      blendshape rarely saturates, so the default
+         *                      `eyeStateThreshold` of 0.5 works.
+         */
+        this._fmWorker = null;
+        this._fmInFlight = false;
+        this._fmLastSentT = 0;
+        this._fmIntervalMs = 1000 / 15;   // 15 fps target
+        this._fmReady = false;
+
+        /**
+         * @private
+         * Rolling buffer of recent jawOpen blendshape values, used to
+         * derive a "speaking" boolean. Variance over the window > threshold
+         * means the jaw is articulating (speech / chewing); low variance
+         * with sustained openness is a yawn/surprise; low variance with
+         * jaw closed is silence.
+         */
+        this._jawOpenBuf = [];
+        this._jawOpenWindowMs = 1_000;
+        this._jawOpenSpeakingStdThresh = 0.04;
     }
 
     // ──────────────────────────── Public API ────────────────────────────
@@ -324,19 +383,50 @@ export default class BrowserAdapter {
             await this._loadBlazeFace();
         }
 
-        // 2b. Image-based emotion calibration — only runs if the caller passed
-        //     `emotionCalibration.images`. Otherwise the worker keeps its
-        //     built-in default Asian baseline. Either way, every `'emotion'`
-        //     event downstream looks identical to the consumer.
+        // 2a. Initialise Face Landmarker (eye blendshape source). Best-effort:
+        //     if it fails, the SDK falls back to OCEC for eye state. That path
+        //     stays compiled in for compatibility / low-end fallback.
+        try {
+            await this._initFaceLandmarker();
+        } catch (err) {
+            this._vs?.emit('error', { source: 'faceLandmarker', message: err.message });
+        }
+
+        // 2b. Emotion calibration. Three options, can mix:
+        //
+        //     emotionCalibration: {
+        //         images:   [b64, …],        // compute baseline from face photos
+        //         baseline: [n0, n1, …, n7], // OR pass an 8-vector of logits directly
+        //         dynamic:  { halfLifeMs },  // AND/OR enable runtime EMA on top
+        //     }
+        //
+        //   - `images` precedence over `baseline` if both supplied.
+        //   - `dynamic` is independent: enables continuous EMA so a sustained
+        //     expression slides the baseline that way, calibration re-centres
+        //     it on Neutral, and the user-visible signal becomes "deviation
+        //     from your typical expression" rather than absolute emotion.
         const cal = this._emotionCalibration;
-        if (cal && Array.isArray(cal.images) && cal.images.length > 0
-            && this._models.emotion && this._vs._workers.emotion) {
-            try {
-                const baseline = await this._computeEmotionBaselineFromImages(cal.images);
-                this._vs._setEmotionBaseline(baseline);
-            } catch (err) {
-                this._vs?.emit('error', { source: 'emotionCalibration', message: err.message });
-                // Fall through: worker keeps its default Asian baseline
+        if (cal && this._models.emotion && this._vs._workers.emotion) {
+            // 2b.i — images path
+            if (Array.isArray(cal.images) && cal.images.length > 0) {
+                try {
+                    const baseline = await this._computeEmotionBaselineFromImages(cal.images);
+                    this._vs._setEmotionBaseline(baseline);
+                } catch (err) {
+                    this._vs?.emit('error', { source: 'emotionCalibration', message: err.message });
+                }
+            }
+            // 2b.ii — direct baseline distribution path (8 logits). Wins over
+            // images only if `images` wasn't provided; if both are supplied,
+            // the images-derived baseline takes precedence (the sequence here
+            // means baseline is set last only if images path wasn't taken).
+            else if (Array.isArray(cal.baseline) && cal.baseline.length === 8) {
+                this._vs._setEmotionBaseline(cal.baseline);
+            }
+            // 2b.iii — dynamic (EMA) baseline mode
+            if (cal.dynamic && typeof cal.dynamic.halfLifeMs === 'number'
+                && cal.dynamic.halfLifeMs > 0) {
+                this._vs._setEmotionDynamic(cal.dynamic.halfLifeMs);
             }
         }
 
@@ -397,6 +487,12 @@ export default class BrowserAdapter {
         if (this._plotWorker) {
             this._plotWorker.terminate();
             this._plotWorker = null;
+        }
+        if (this._fmWorker) {
+            this._fmWorker.terminate();
+            this._fmWorker = null;
+            this._fmReady = false;
+            this._fmInFlight = false;
         }
         if (this._vs) {
             this._vs.destroy();
@@ -566,6 +662,147 @@ export default class BrowserAdapter {
     }
 
     /**
+     * Spawn the Face Landmarker worker, ship the WASM base + .task model URL,
+     * and wire the message handler that dispatches `eyestate` events.
+     *
+     * Eye-state contract: `1 - blinkX` is fed into the existing
+     * `_onEyeStateResult` legacy single-shot path on VitalCamera, which is
+     * how the motion-gate fallback already injects neutral 0.6 — so the
+     * downstream `eyestate` event payload is unchanged.
+     *
+     * @private
+     */
+    async _initFaceLandmarker() {
+        const buf = this._models && this._models.faceLandmarker;
+        let modelPath;
+        if (buf) {
+            // ArrayBuffer / Uint8Array passed in by caller — wrap as Blob URL
+            // so the worker can fetch it via `modelAssetPath`. (tasks-vision
+            // also accepts `modelAssetBuffer`, but our worker uses path.)
+            const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+            modelPath = URL.createObjectURL(new Blob([u8]));
+        } else {
+            // Resolve to absolute URL so the worker's blob context can fetch it
+            modelPath = new URL(
+                this._modelBasePath + 'face_landmarker.task',
+                location.href
+            ).href;
+        }
+
+        const worker = await createWorker('face_landmarker', this._workerBasePath);
+        this._fmWorker = worker;
+
+        worker.addEventListener('message', (ev) => {
+            const m = ev.data || {};
+            if (m.type === 'initDone') {
+                this._fmReady = true;
+            } else if (m.type === 'result') {
+                this._fmInFlight = false;
+                const now = Date.now();
+
+                // 1 - blink → open prob. Adapter feeds the legacy single-shot
+                // path on VitalCamera; OCEC isn't involved.
+                this._vs?._onEyeStateResult({
+                    leftProb:  1 - m.blinkL,
+                    rightProb: 1 - m.blinkR,
+                    time: m.time,
+                });
+
+                // ── jawOpen → 'mouth' event with speaking heuristic ──
+                // Speaking ≠ "mouth open": yawning has high jawOpen but no
+                // motion. Articulation has lots of small up-down variance.
+                // We compute std over a rolling 1s window of jawOpen samples;
+                // if std exceeds a threshold the jaw is moving → speaking.
+                this._jawOpenBuf.push({ t: now, v: m.jawOpen });
+                const cutoff = now - this._jawOpenWindowMs;
+                while (this._jawOpenBuf.length && this._jawOpenBuf[0].t < cutoff) {
+                    this._jawOpenBuf.shift();
+                }
+                let speaking = false;
+                let jawStd = 0;
+                if (this._jawOpenBuf.length >= 5) {
+                    let sum = 0;
+                    for (const e of this._jawOpenBuf) sum += e.v;
+                    const mean = sum / this._jawOpenBuf.length;
+                    let varSum = 0;
+                    for (const e of this._jawOpenBuf) varSum += (e.v - mean) ** 2;
+                    jawStd = Math.sqrt(varSum / this._jawOpenBuf.length);
+                    speaking = jawStd > this._jawOpenSpeakingStdThresh;
+                }
+                this._vs?.emit('mouth', {
+                    jawOpen:  m.jawOpen,
+                    jawStd,
+                    speaking,
+                    time:     m.time,
+                    timestamp: now,
+                });
+
+                // Stash for advanced consumers (we don't use landmarks in the
+                // adapter today, but exposing them is a no-op cost-wise).
+                this._lastFaceLandmarks = m.landmarks;
+            } else if (m.type === 'noFace') {
+                this._fmInFlight = false;
+                this._lastFaceLandmarks = null;
+                // Face left frame — flush jaw history so we don't carry
+                // stale variance into the next reappearance.
+                this._jawOpenBuf.length = 0;
+            } else if (m.type === 'error') {
+                this._fmInFlight = false;
+                this._vs?.emit('error', { source: 'faceLandmarker', message: m.msg });
+                // eslint-disable-next-line no-console
+                console.error('[face_landmarker]', m.msg, m.stack);
+            }
+        });
+        worker.addEventListener('error', (e) => {
+            this._fmInFlight = false;
+            this._vs?.emit('error', { source: 'faceLandmarker', message: e.message });
+        });
+
+        worker.postMessage({
+            type: 'init',
+            payload: {
+                wasmBase: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
+                modelPath,
+                delegate: 'GPU',
+            },
+        });
+    }
+
+    /**
+     * Push the current frame to the Face Landmarker worker if it's time and
+     * the worker isn't already busy. Non-blocking — when inference is slow
+     * (e.g. 200 ms on a low-end device) we just skip ticks instead of queuing.
+     *
+     * @param {HTMLCanvasElement|OffscreenCanvas} sourceCanvas
+     * @param {number} now  performance.now() timestamp
+     * @private
+     */
+    async _pumpFaceLandmarker(sourceCanvas, now) {
+        if (!this._fmReady || this._fmInFlight) return;
+        if ((now - this._fmLastSentT) < this._fmIntervalMs) return;
+
+        this._fmInFlight = true;
+        this._fmLastSentT = now;
+
+        let bitmap;
+        try {
+            bitmap = await createImageBitmap(sourceCanvas);
+        } catch (_) {
+            this._fmInFlight = false;
+            return;
+        }
+        try {
+            this._fmWorker.postMessage(
+                { type: 'frame', payload: { bitmap, timestamp: now } },
+                [bitmap],
+            );
+        } catch (err) {
+            this._fmInFlight = false;
+            try { bitmap.close(); } catch (_) { /* ignore */ }
+        }
+    }
+
+    /**
      * Start camera and attach to video element.
      * @private
      */
@@ -667,6 +904,13 @@ export default class BrowserAdapter {
             return; // non-fatal
         }
 
+        // Push the current frame to the Face Landmarker worker (15 fps,
+        // non-blocking — see `_pumpFaceLandmarker`). Fire-and-forget; the
+        // inflight flag handles backpressure on slow devices.
+        if (this._fmReady) {
+            this._pumpFaceLandmarker(ctx.canvas, performance.now());
+        }
+
         if (!detection) {
             // No face — still emit so UI can hide overlay
             this._kfBoxX = null; this._kfBoxY = null;
@@ -674,6 +918,9 @@ export default class BrowserAdapter {
             this._kfEyeLX = null; this._kfEyeLY = null; this._kfEyeLW = null; this._kfEyeLH = null;
             this._kfEyeRX = null; this._kfEyeRY = null; this._kfEyeRW = null; this._kfEyeRH = null;
             this._lastEyeKpL = null; this._lastEyeKpR = null;
+            // Face left frame — treat the next reappearance as motion-end
+            // so the baseline is reset and the 1s grace lock kicks in.
+            this._eyeMotionWasActive = true;
             this._vs?.emit('face', {
                 detected: false,
                 box: null,
@@ -687,13 +934,16 @@ export default class BrowserAdapter {
 
         const { box: rawBox, keypoints } = detection;
 
-        // ── Kalman-filter the face bounding box (matches FacePhys behaviour) ──
+        // ── Kalman-filter the face bounding box ──
+        // processNoise bumped 5× from the default (KF_BOX_Q above) since
+        // Face Landmarker is far more stable than BlazeFace; trust new
+        // measurements more so the box keeps up with fast head motion.
         let box;
         if (!this._kfBoxX) {
-            this._kfBoxX = new KalmanFilter1D(rawBox.x);
-            this._kfBoxY = new KalmanFilter1D(rawBox.y);
-            this._kfBoxW = new KalmanFilter1D(rawBox.w);
-            this._kfBoxH = new KalmanFilter1D(rawBox.h);
+            this._kfBoxX = new KalmanFilter1D(rawBox.x, KF_BOX_Q);
+            this._kfBoxY = new KalmanFilter1D(rawBox.y, KF_BOX_Q);
+            this._kfBoxW = new KalmanFilter1D(rawBox.w, KF_BOX_Q);
+            this._kfBoxH = new KalmanFilter1D(rawBox.h, KF_BOX_Q);
             box = { ...rawBox };
         } else {
             box = {
@@ -737,13 +987,11 @@ export default class BrowserAdapter {
             frameInput.emotionInput = cropAndResize(ctx, emotionBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
         }
 
-        // Eye-state (every frame — single forward pass per eye is ~0.3 ms).
-        // BlazeFace short-range keypoint order:
-        //   [0]=right_eye, [1]=left_eye  — names from the *subject's* perspective.
-        // We size the crop from the inter-eye distance (anatomically tight), not
-        // face.w (which can be loose around hair/fringe), so the eye fills most
-        // of the 40x24 OCEC input — matching the tight crops it was trained on.
-        if (this._models.eyeState && keypoints && keypoints.length >= 2) {
+        // Eye-state via OCEC: only runs if Face Landmarker isn't supplying
+        // eye blendshapes. When FL is active, `_onEyeStateResult` is fed by
+        // the FL worker's blink scores (1 - eyeBlinkLeft/Right) at 15 fps,
+        // and this whole block is dead code for the frame.
+        if (!this._fmReady && this._models.eyeState && keypoints && keypoints.length >= 2) {
             const dx = keypoints[0].x - keypoints[1].x;
             const dy = keypoints[0].y - keypoints[1].y;
             const iod = Math.hypot(dx, dy);
@@ -759,7 +1007,18 @@ export default class BrowserAdapter {
             this._lastEyeKpL = { x: keypoints[1].x, y: keypoints[1].y };
             this._lastEyeKpR = { x: keypoints[0].x, y: keypoints[0].y };
 
-            if (iod > 4 && motionFrac >= EYE_MOTION_GATE) {
+            // Track motion-gate state across frames so we can detect the
+            // transition "moving → stable" (or "first ever stable frame after
+            // init") and reset the per-user eye baseline at that moment. The
+            // initial value is `true` so the very first stable frame after
+            // construction triggers a baseline reset and 1s grace lock.
+            const motionActive = (iod > 4 && motionFrac >= EYE_MOTION_GATE);
+            if (this._eyeMotionWasActive && !motionActive && iod > 4) {
+                this._vs?._resetEyeBaseline();
+            }
+            this._eyeMotionWasActive = motionActive;
+
+            if (motionActive) {
                 // Head moving fast — bypass the worker, push a neutral state directly.
                 this._vs?._onEyeStateResult({
                     leftProb: EYE_MOTION_NEUTRAL_PROB,
@@ -772,10 +1031,10 @@ export default class BrowserAdapter {
                 // Kalman-filter both eye boxes — same defaults as the face box for visual consistency
                 let rightBox, leftBox;
                 if (!this._kfEyeLX) {
-                    this._kfEyeLX = new KalmanFilter1D(rawL.x); this._kfEyeLY = new KalmanFilter1D(rawL.y);
-                    this._kfEyeLW = new KalmanFilter1D(rawL.w); this._kfEyeLH = new KalmanFilter1D(rawL.h);
-                    this._kfEyeRX = new KalmanFilter1D(rawR.x); this._kfEyeRY = new KalmanFilter1D(rawR.y);
-                    this._kfEyeRW = new KalmanFilter1D(rawR.w); this._kfEyeRH = new KalmanFilter1D(rawR.h);
+                    this._kfEyeLX = new KalmanFilter1D(rawL.x, KF_BOX_Q); this._kfEyeLY = new KalmanFilter1D(rawL.y, KF_BOX_Q);
+                    this._kfEyeLW = new KalmanFilter1D(rawL.w, KF_BOX_Q); this._kfEyeLH = new KalmanFilter1D(rawL.h, KF_BOX_Q);
+                    this._kfEyeRX = new KalmanFilter1D(rawR.x, KF_BOX_Q); this._kfEyeRY = new KalmanFilter1D(rawR.y, KF_BOX_Q);
+                    this._kfEyeRW = new KalmanFilter1D(rawR.w, KF_BOX_Q); this._kfEyeRH = new KalmanFilter1D(rawR.h, KF_BOX_Q);
                     leftBox  = { ...rawL };
                     rightBox = { ...rawR };
                 } else {
@@ -789,24 +1048,68 @@ export default class BrowserAdapter {
                     };
                 }
                 if (rightBox.w > 1 && rightBox.h > 1 && leftBox.w > 1 && leftBox.h > 1) {
-                    frameInput.eyeRightInput = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
-                    frameInput.eyeLeftInput  = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
+                    // One crop per eye → packed into a 2-image batch (right at
+                    // index 0, left at index 1) which the worker runs as a
+                    // sequential loop of batch=1 inferences.
+                    const EYE_LEN = EYE_W * EYE_H * 3;
+                    const batch = new Float32Array(2 * EYE_LEN);
+                    const cropR = cropAndResize(ctx, rightBox, EYE_W, EYE_H, 'simple');
+                    const cropL = cropAndResize(ctx, leftBox,  EYE_W, EYE_H, 'simple');
+                    batch.set(cropR, 0);
+                    batch.set(cropL, EYE_LEN);
+                    frameInput.eyeBatchInput = batch;
                     this._lastEyeBoxes = { left: leftBox, right: rightBox };
                 }
             }
         }
 
         // Gaze (5 Hz throttle, gated by eye-state — when both eyes have p(open) <
-        // gazeEyeOpenGateProb (default 0.7) we skip the inference entirely.  No
+        // gazeEyeOpenGateProb (default 0.6) we skip the inference entirely.  No
         // 'gaze' event fires for that frame, so the demo Kalman just predicts
         // forward without a measurement update.
         if (this._models.gaze && (now - this._lastGazeTime > this._gazeInterval)) {
-            const gateProb = this._vs?.config?.gazeEyeOpenGateProb ?? 0.7;
+            const gateProb = this._vs?.config?.gazeEyeOpenGateProb ?? 0.6;
             const eyeSt    = this._vs?._lastEyeState;
             const eyesOpen = !eyeSt || (Math.max(eyeSt.leftProb, eyeSt.rightProb) >= gateProb);
             if (eyesOpen) {
                 this._lastGazeTime = now;
-                const gazeBox = padBox(box, w, h, 0.2);
+
+                // Compute the gaze face bbox. L2CS-Net (the network behind
+                // mobileone_s0_gaze_float16.tflite) wants a 448×448 face crop
+                // with the eyes at roughly upper-third — the convention from
+                // its MTCNN-bbox training pipeline. Two sources, in order of
+                // preference:
+                //
+                //   1. Face Mesh landmark min/max  (preferred). 478 anatomical
+                //      points — the bbox is tight to the visible face surface
+                //      and temporally stable from Face Landmarker's internal
+                //      tracking. Eyes always land at consistent in-crop
+                //      coordinates regardless of how loose BlazeFace got.
+                //
+                //   2. BlazeFace bbox  (fallback, used during the first 1–2 s
+                //      while Face Landmarker boots, or if its model fails to
+                //      load). Padded by FACE_PAD as before.
+                let gazeBox;
+                const lms = this._lastFaceLandmarks;
+                if (lms && lms.length >= 3) {
+                    let xMin = Infinity, xMax = -Infinity;
+                    let yMin = Infinity, yMax = -Infinity;
+                    for (let i = 0; i < lms.length; i += 3) {
+                        const px = lms[i]     * w;
+                        const py = lms[i + 1] * h;
+                        if (px < xMin) xMin = px;
+                        if (px > xMax) xMax = px;
+                        if (py < yMin) yMin = py;
+                        if (py > yMax) yMax = py;
+                    }
+                    gazeBox = padBox(
+                        { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin },
+                        w, h, 0.2,
+                    );
+                } else {
+                    gazeBox = padBox(box, w, h, 0.2);
+                }
+
                 frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');
             }
         }
@@ -886,6 +1189,7 @@ export default class BrowserAdapter {
         gaze:         'mobileone_s0_gaze_float16.tflite',
         eyeState:     'ocec_p.tflite',
         faceDetector: 'blaze_face_short_range.tflite',
+        faceLandmarker: 'face_landmarker.task',
     };
 
     /**
