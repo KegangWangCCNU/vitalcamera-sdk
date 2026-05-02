@@ -296,7 +296,7 @@ Emitted on any worker or processing error.
 ```javascript
 vc.on('error', ({ source, message }) => {
   console.error(`[${source}]`, message);
-  // source — string, e.g. 'rppg', 'emotion', 'gaze', 'eyeState',
+  // source — string, e.g. 'rppg', 'emotion', 'gaze', 'faceLandmarker',
   //          'headpose', 'plot', 'emotionCalibration'
 });
 ```

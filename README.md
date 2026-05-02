@@ -203,10 +203,9 @@ Models are **included** in the npm package and git repository under `models/`. T
 | rppgProj | `proj.tflite` | Projection matrix |
 | sqi | `sqi_model.tflite` | Signal quality index |
 | psd | `psd_model.tflite` | Power spectral density |
-| emotion | `enet_b0_8_*.tflite` | Emotion classification (optional) |
-| gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional) |
-| faceLandmarker | `face_landmarker.task` | MediaPipe Face Landmarker — 478 landmarks + blendshapes (eyestate + mouth) |
-| eyeState | `ocec_p.tflite` | Eye open/closed (OCEC, optional, ~112 KB) |
+| emotion | `enet_b0_8_*.tflite` | Emotion classification (optional, ~4.5 MB) |
+| gaze | `mobileone_s0_gaze_*.tflite` | Gaze estimation (optional, ~5 MB; requires Face Landmarker) |
+| faceLandmarker | `face_landmarker.task` | MediaPipe Face Landmarker (~3.8 MB) — drives `eyestate`, `mouth`, gaze face crop. Disable with `loadModels({ faceLandmarker: false })` + `enableFaceLandmarker: false` for a lightweight build. |
 
 ## Citations
 
@@ -268,14 +267,6 @@ If you use this SDK in your research, please cite the relevant papers:
                and Tuzel, Oncel and Ranjan, Anurag},
   booktitle = {CVPR},
   year      = {2023}
-}
-
-@misc{hyodo2025ocec,
-  title     = {OCEC — Open / Closed Eyes Classification},
-  author    = {Hyodo, Katsuya},
-  year      = {2025},
-  doi       = {10.5281/zenodo.17505461},
-  url       = {https://github.com/PINTO0309/OCEC}
 }
 ```
 
