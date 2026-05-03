@@ -2,6 +2,22 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.3 — 2026-05-02
+
+### Fixed
+
+- **Face bbox Kalman tuning reverted to 1e-2** (was bumped to 5e-2 in 0.6.0).
+  The bump was justified by "Face Landmarker is more accurate than BlazeFace",
+  but the FL bbox path doesn't go through this Kalman — it's computed from
+  478-landmark min/max directly. So the bump only affected BlazeFace-driven
+  `boxRaw`, making it visibly jumpier without any benefit. With this revert
+  the FL-off / lite path matches the early SDK's smoother feel.
+
+### Added
+
+- `docs/demo_lite.html` — public CDN-pinned version of the lightweight
+  (FL-off) demo, accessible without a local server.
+
 ## 0.6.2 — 2026-05-02
 
 ### Changed

@@ -78,15 +78,17 @@ const EYE_MOTION_NEUTRAL_PROB = 0.55;
 const FACE_PAD = 0.25;
 
 /**
- * Process-noise for the face / eye bounding-box Kalman filters.
+ * Process-noise for the face bounding-box Kalman filter.
  *
- * Default in `KalmanFilter1D` is 1e-2 (paired with measurementNoise=5e-1),
- * tuned originally for noisy BlazeFace short-range detections. Face Landmarker
- * gives much more stable per-frame coordinates, so we bump processNoise 5×
- * to `5e-2` — the filter trusts new measurements more aggressively, the box
- * keeps up with fast head motion instead of trailing.
+ * `1e-2` (paired with the default `KalmanFilter1D` measurementNoise=5e-1)
+ * was the original tuning for BlazeFace short-range detections. 0.6.0
+ * temporarily bumped this to 5e-2 anticipating the move to Face Landmarker,
+ * but the FL path bypasses this Kalman entirely (FL bbox is computed from
+ * the 478-landmark min/max directly), so the bump only made the BlazeFace-
+ * driven `boxRaw` jumpier without any FL-side benefit. 0.6.3 reverts to
+ * the original value — `boxRaw` smoothness now matches early SDK behaviour.
  */
-const KF_BOX_Q = 5e-2;
+const KF_BOX_Q = 1e-2;
 
 /* ── Eye-state inference: one crop per eye, raw OCEC sigmoid as the answer. ── */
 

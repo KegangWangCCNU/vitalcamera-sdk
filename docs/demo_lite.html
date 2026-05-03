@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vital Camera — Lite (no Face Landmarker)</title>
+<style>
+    :root {
+        --bg: #f5f0e8; --surface: #ffffff;
+        --text-primary: #1a1a1a; --text-secondary: #6b6b6b; --text-tertiary: #9a9a9a;
+        --border: rgba(0,0,0,0.12); --accent: #c96442;
+        --radius: 10px; --radius-sm: 6px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        background: var(--bg); color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+        padding: 24px; -webkit-font-smoothing: antialiased; line-height: 1.45;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; display: grid; gap: 12px;
+            grid-template-columns: 1fr 480px; }
+    @media (max-width: 800px) { .wrap { grid-template-columns: 1fr; } }
+    h1 { font-size: 20px; grid-column: 1 / -1; }
+    .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 4px; grid-column: 1 / -1; }
+    .pill {
+        display: inline-block; padding: 2px 10px; margin-left: 6px;
+        background: rgba(201,100,66,0.12); color: var(--accent);
+        border-radius: 999px; font-size: 11px; font-weight: 500;
+    }
+
+    .col { display: flex; flex-direction: column; gap: 10px;
+           background: var(--surface); border: 1px solid var(--border);
+           border-radius: var(--radius); padding: 12px; }
+
+    /* stats */
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stat {
+        background: #f7f3ec; border-radius: var(--radius-sm); padding: 8px 10px;
+    }
+    .stat .lbl { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat .val { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .stat .val.active { color: var(--accent); }
+
+    /* video */
+    .video-wrap {
+        position: relative; aspect-ratio: 4/3; background: #000;
+        border-radius: var(--radius-sm); overflow: hidden;
+    }
+    #cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #overlay { pointer-events: none; }
+
+    /* BVP */
+    .bvp-wrap { height: 80px; background: #eee9e0; border-radius: var(--radius-sm);
+                position: relative; overflow: hidden; }
+
+    /* Emotion vertical bars */
+    .emo-cols { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px;
+                height: 56px; }
+    .emo-col { display: flex; flex-direction: column; min-width: 0; }
+    .emo-track { flex: 1; background: rgba(0,0,0,0.06); border-radius: 3px; position: relative; overflow: hidden; }
+    .emo-fill  { position: absolute; bottom: 0; left: 0; right: 0; height: 0%; transition: height 0.2s; border-radius: 3px 3px 0 0; }
+    .emo-name  { font-size: 10px; text-align: center; color: var(--text-secondary); margin-top: 3px; }
+
+    /* head pose */
+    .head-row { display: flex; gap: 12px; align-items: center; }
+    .head-vals { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-secondary); flex: 1; }
+    .head-vals span { display: inline-block; min-width: 70px; }
+
+    /* control */
+    button {
+        background: var(--accent); color: #fff; border: none;
+        padding: 9px 18px; border-radius: 8px; font-size: 14px;
+        font-family: inherit; cursor: pointer;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* log */
+    pre.log {
+        background: #1a1a1a; color: #d8d8d8;
+        padding: 10px; border-radius: 6px;
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 11px; line-height: 1.5;
+        max-height: 140px; overflow: auto;
+    }
+    .log .ok { color: #74c69d; }
+    .log .err { color: #ff8a80; }
+    .log .info { color: #74a9ff; }
+
+    .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                     letter-spacing: 0.05em; color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <h1>Vital Camera — Lite path<span class="pill">enableFaceLandmarker: false</span></h1>
+    <p class="sub">
+        Sanity test for the FL-off pipeline. Disables Face Landmarker entirely
+        (and with it: <code>eyestate</code>, <code>mouth</code>, <code>gaze</code>).
+        Active modules: <strong>rPPG / HRV / emotion / head pose</strong>.
+        Face detection is BlazeFace short-range only.
+    </p>
+
+    <!-- LEFT column: panels -->
+    <div class="col">
+        <div class="stats">
+            <div class="stat"><div class="lbl">HR (BPM)</div><div class="val" id="hr">--</div></div>
+            <div class="stat"><div class="lbl">SQI</div><div class="val" id="sqi">0.00</div></div>
+            <div class="stat"><div class="lbl">RMSSD</div><div class="val" id="rmssd">--</div></div>
+            <div class="stat"><div class="lbl">SDNN</div><div class="val" id="sdnn">--</div></div>
+            <div class="stat"><div class="lbl">FPS</div><div class="val" id="fps">0</div></div>
+            <div class="stat"><div class="lbl">Frames</div><div class="val" id="frames">0</div></div>
+        </div>
+
+        <div>
+            <div class="section-title">BVP waveform</div>
+            <div class="bvp-wrap"><canvas id="bvpCanvas" style="width:100%;height:100%;"></canvas></div>
+        </div>
+
+        <div>
+            <div class="section-title" id="emoTopLabel">Emotion · Waiting…</div>
+            <div class="emo-cols" id="emoCols"></div>
+        </div>
+
+        <div>
+            <div class="section-title">Head pose (deg)</div>
+            <div class="head-row">
+                <div class="head-vals">
+                    <span>yaw <b id="hpY">--</b></span>
+                    <span>pitch <b id="hpP">--</b></span>
+                    <span>roll <b id="hpR">--</b></span>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="section-title">Diagnostics</div>
+            <pre class="log" id="log">waiting…</pre>
+        </div>
+    </div>
+
+    <!-- RIGHT column: video + overlay + start -->
+    <div class="col">
+        <div class="video-wrap">
+            <video id="cam" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <button id="startBtn">Start</button>
+    </div>
+</div>
+
+<script type="module">
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS, EMOTION_COLORS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/src/index.js';
+
+const videoEl   = document.getElementById('cam');
+const overlay   = document.getElementById('overlay');
+const startBtn  = document.getElementById('startBtn');
+const logEl     = document.getElementById('log');
+const bvpCanvas = document.getElementById('bvpCanvas');
+
+let adapter = null;
+let frameCount = 0, lastFpsT = 0;
+const setText = (id, t) => document.getElementById(id).textContent = t;
+
+function log(msg, kind = '') {
+    const stamp = new Date().toLocaleTimeString('en-GB', { hour12: false });
+    const cls = kind ? ` class="${kind}"` : '';
+    logEl.innerHTML += `<div${cls}>[${stamp}] ${msg}</div>`;
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ── Build the 8 emotion columns ──
+{
+    const root = document.getElementById('emoCols');
+    EMOTION_LABELS.forEach((label, i) => {
+        const col = document.createElement('div');
+        col.className = 'emo-col';
+        col.innerHTML = `
+            <div class="emo-track"><div class="emo-fill" id="emo_${i}" style="background:${EMOTION_COLORS[i]}"></div></div>
+            <div class="emo-name">${label.slice(0, 3)}</div>
+        `;
+        root.appendChild(col);
+    });
+}
+
+// ── BVP waveform ──
+const bvpCtx = bvpCanvas.getContext('2d', { alpha: false });
+const bvpHistory = [];          // ring of recent samples (max ~6 s @ 30 fps)
+const BVP_HISTORY_MAX = 200;
+
+function resizeBvpCanvas() {
+    const r = bvpCanvas.getBoundingClientRect();
+    const dpr = devicePixelRatio || 1;
+    bvpCanvas.width  = r.width  * dpr;
+    bvpCanvas.height = r.height * dpr;
+    bvpCtx.fillStyle = '#eee9e0';
+    bvpCtx.fillRect(0, 0, bvpCanvas.width, bvpCanvas.height);
+}
+function drawBvp() {
+    if (bvpHistory.length < 2) return;
+    const W = bvpCanvas.width, H = bvpCanvas.height;
+    bvpCtx.fillStyle = '#eee9e0';
+    bvpCtx.fillRect(0, 0, W, H);
+    let lo = Infinity, hi = -Infinity;
+    for (const v of bvpHistory) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    const range = (hi - lo) || 1;
+    bvpCtx.strokeStyle = '#c96442';
+    bvpCtx.lineWidth = 2;
+    bvpCtx.beginPath();
+    for (let i = 0; i < bvpHistory.length; i++) {
+        const x = (i / (bvpHistory.length - 1)) * W;
+        const y = H - ((bvpHistory[i] - lo) / range) * (H * 0.85) - H * 0.075;
+        if (i === 0) bvpCtx.moveTo(x, y); else bvpCtx.lineTo(x, y);
+    }
+    bvpCtx.stroke();
+}
+
+// ── Init flow ──
+async function init() {
+    startBtn.disabled = true;
+    logEl.innerHTML = '';
+
+    try {
+        log('loading models (skipping faceLandmarker)…', 'info');
+        const models = await BrowserAdapter.loadModels('https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/models/', {
+            emotion:        true,
+            gaze:           false,    // gaze depends on FL; turn off
+            faceLandmarker: false,    // skip the 3.8 MB bundle
+        });
+        log('✓ models loaded ' + Object.keys(models).join(', '), 'ok');
+
+        log('booting adapter (FL off path)…', 'info');
+        adapter = new BrowserAdapter({
+            videoElement:  videoEl,
+            models,
+            modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/models/',
+            vitalcameraConfig: {
+                enableFaceLandmarker: false,   // ← master switch off
+                enableEmotion:        true,
+                enableHeadPose:       true,
+                enableHrv:            true,
+                // enableEyeState / enableMouth / enableGaze → forced off by
+                // the FL dependency check; will warn once and continue.
+            },
+        });
+
+        await adapter.init();
+        log('✓ adapter.init() resolved', 'ok');
+
+        const vc = adapter.vitalcamera;
+
+        vc.on('error', (e) => log(`[error/${e.source}] ${e.message}`, 'err'));
+
+        vc.on('heartrate', ({ hr, sqi }) => {
+            const el = document.getElementById('hr');
+            setText('sqi', sqi.toFixed(2));
+            if (sqi > 0.38) {
+                setText('hr', hr.toFixed(0));
+                el.classList.add('active');
+            } else {
+                setText('hr', '--');
+                el.classList.remove('active');
+            }
+        });
+
+        vc.on('bvp', ({ value }) => {
+            bvpHistory.push(value);
+            if (bvpHistory.length > BVP_HISTORY_MAX) bvpHistory.shift();
+        });
+
+        vc.on('hrv', ({ rmssd, sdnn, reject }) => {
+            if (rmssd == null) {
+                setText('rmssd', '--');
+                setText('sdnn', '--');
+                return;
+            }
+            setText('rmssd', rmssd.toFixed(1));
+            setText('sdnn', sdnn.toFixed(1));
+        });
+
+        vc.on('emotion', ({ emotion, probs }) => {
+            if (!probs || probs.length === 0) return;
+            for (let i = 0; i < probs.length; i++) {
+                const fill = document.getElementById('emo_' + i);
+                if (fill) fill.style.height = (probs[i] * 100).toFixed(1) + '%';
+            }
+            let topIdx = 0;
+            for (let i = 1; i < probs.length; i++) if (probs[i] > probs[topIdx]) topIdx = i;
+            document.getElementById('emoTopLabel').textContent =
+                `Emotion · ${EMOTION_EMOJIS[topIdx]} ${EMOTION_LABELS[topIdx]} (${(probs[topIdx]*100).toFixed(0)}%)`;
+        });
+
+        vc.on('headpose', ({ yaw, pitch, roll }) => {
+            setText('hpY', yaw.toFixed(1));
+            setText('hpP', pitch.toFixed(1));
+            setText('hpR', roll.toFixed(1));
+        });
+
+        // Sanity events that should NOT fire on this path:
+        vc.on('eyestate', () => log('UNEXPECTED eyestate event!', 'err'));
+        vc.on('mouth',    () => log('UNEXPECTED mouth event!', 'err'));
+        vc.on('gaze',     () => log('UNEXPECTED gaze event!', 'err'));
+
+        // ── face overlay ──
+        const overlayCtx = overlay.getContext('2d');
+        let lastFpsCount = 0;
+        vc.on('face', ({ detected, box, videoWidth, videoHeight }) => {
+            if (overlay.width !== videoWidth || overlay.height !== videoHeight) {
+                overlay.width  = videoWidth;
+                overlay.height = videoHeight;
+            }
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            if (detected && box) {
+                overlayCtx.strokeStyle = 'rgba(201,100,66,0.85)';
+                overlayCtx.lineWidth = 2;
+                overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
+            }
+            frameCount++;
+            setText('frames', frameCount);
+            if (frameCount % 30 === 0) {
+                const now = performance.now();
+                if (lastFpsT) setText('fps', (30 / (now - lastFpsT) * 1000).toFixed(1));
+                lastFpsT = now;
+            }
+            drawBvp();
+        });
+
+        adapter.start();
+        log('✓ camera + workers started — events should be flowing', 'ok');
+        log('expect: heartrate / bvp / hrv / emotion / headpose / face', 'info');
+        log('NOT expected: eyestate / mouth / gaze', 'info');
+
+        resizeBvpCanvas();
+        window.addEventListener('resize', resizeBvpCanvas);
+    } catch (err) {
+        log(`✗ ${err.message}`, 'err');
+        console.error(err);
+        startBtn.disabled = false;
+    }
+}
+
+startBtn.addEventListener('click', init);
+</script>
+</body>
+</html>
