@@ -620,11 +620,14 @@ async function init() {
         modelBasePath: '../models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
         emotionCalibration: {
-            // Dynamic EMA: a sustained expression slides the baseline toward
-            // those logits with 5 s half-life. Calibration re-centres the
-            // result on Neutral, so what the user sees is "deviation from
-            // your typical resting expression" rather than absolute label.
-            dynamic: { halfLifeMs: 5000 },
+            // Dynamic EMA: sustained expressions slide the baseline toward
+            // those logits. Calibration re-centres the result on Neutral,
+            // so what the user sees is "deviation from your typical resting
+            // expression" rather than absolute label. The SDK auto-persists
+            // the live baseline to IndexedDB every ~2 s, so a returning
+            // user skips the first 5-10 s of warm-up wobble. Boolean
+            // shorthand here uses the default 5 s half-life.
+            dynamic: true,
         },
     });
 

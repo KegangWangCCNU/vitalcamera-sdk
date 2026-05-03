@@ -2,6 +2,42 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.6 — 2026-05-03
+
+### Changed
+
+- **`emotionCalibration.dynamic` now accepts an explicit boolean switch.**
+  Previous releases keyed the on/off state on whether the field was an
+  object or absent — `dynamic: { halfLifeMs: 5000 }` to enable, omit the
+  field to disable. That worked but wasn't discoverable. The supported
+  forms now are:
+
+  ```javascript
+  dynamic: true                              // enable, default 5 s half-life
+  dynamic: { halfLifeMs: 3000 }              // enable, custom half-life
+  dynamic: { enabled: true, halfLifeMs: 5000 } // enable, explicit
+  dynamic: false                             // explicit off
+  dynamic: { enabled: false }                // explicit off
+  dynamic: { halfLifeMs: 0 }                 // off (legacy)
+  // omitted                                 // off
+  ```
+
+  The legacy `{ halfLifeMs: N }` form is kept verbatim — no migration needed.
+
+- **IndexedDB baseline cache is now gated on `dynamic` being enabled.**
+  When `dynamic` is off the SDK never reads or writes the IDB baseline,
+  so a static-baseline session can no longer be silently mutated by a
+  stale dynamic baseline left over from a previous session. When dynamic
+  is on, persistence works exactly as before (~2 s auto-save). Toggling
+  `_setEmotionDynamic(0)` at runtime stops further saves; toggling it
+  back on resumes from the most recently persisted baseline.
+
+### Demo
+
+- `examples/demo.html` switched to `dynamic: true` (functionally identical
+  to the previous `{ halfLifeMs: 5000 }` it used to pass — same default
+  half-life — but reads cleaner).
+
 ## 0.6.5 — 2026-05-03
 
 ### Changed

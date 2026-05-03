@@ -79,10 +79,12 @@ const adapter = new BrowserAdapter({
         baseline: [3.2, 0.3, -3.9, -3.3, -3.2, 4.5, 4.4, -0.5],
 
         // 3) AND/OR runtime EMA: the baseline drifts toward sustained
-        //    expressions with this half-life, so the visible signal becomes
-        //    "deviation from your typical expression". 5s is a comfortable
-        //    default — sustained smiles fade to Neutral over a few seconds.
-        dynamic: { halfLifeMs: 5000 },
+        //    expressions, so the visible signal becomes "deviation from
+        //    your typical expression".  Boolean shorthand uses a 5 s
+        //    half-life; the object form lets you tune it.
+        dynamic: true,                       // enable with default 5 s
+        // dynamic: { halfLifeMs: 3000 },    // or specify a custom half-life
+        // dynamic: false,                   // explicit off (or just omit the key)
     },
 });
 
@@ -90,8 +92,10 @@ await adapter.init();   // images + baseline applied at init, dynamic runs conti
 ```
 
 `images` precedes `baseline` if both supplied; `dynamic` is independent of
-both. The `'emotion'` event payload is identical regardless of which modes
-are active. See
+both. When `dynamic` is enabled the SDK auto-persists the mutating baseline
+to IndexedDB every ~2 s, so a returning user skips the warm-up wobble.
+The `'emotion'` event payload is identical regardless of which modes are
+active. See
 [docs/configuration.md](docs/configuration.md#emotion-calibration) for the
 KL-blend math and details.
 

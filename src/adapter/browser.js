@@ -176,6 +176,39 @@ function padBox(raw, canvasW, canvasH, pad = FACE_PAD) {
     return { x, y, w, h };
 }
 
+
+/**
+ * Normalize the user-facing `emotionCalibration.dynamic` config into a single
+ * positive `halfLifeMs` number (or 0 when disabled). Accepts:
+ *
+ *   true                          → enabled, default 5000 ms half-life
+ *   false / undefined / null      → disabled (returns 0)
+ *   { halfLifeMs: N }             → enabled with N (must be > 0; else 5000)
+ *   { enabled: false }            → disabled
+ *   { enabled: true, halfLifeMs } → enabled with N
+ *
+ * Returning 0 lets every downstream gate just check `> 0` without needing
+ * to redo the boolean / object dispatch.
+ *
+ * @param {boolean|{halfLifeMs?: number, enabled?: boolean}|null|undefined} dyn
+ * @returns {number}  0 when disabled; positive halfLifeMs when enabled
+ */
+const DEFAULT_DYNAMIC_HALF_LIFE_MS = 5000;
+function _resolveDynamicHalfLifeMs(dyn) {
+    if (dyn === true) return DEFAULT_DYNAMIC_HALF_LIFE_MS;
+    if (dyn === false || dyn == null) return 0;
+    if (typeof dyn === 'object') {
+        if (dyn.enabled === false) return 0;
+        const hl = dyn.halfLifeMs;
+        if (typeof hl === 'number' && hl > 0) return hl;
+        if (dyn.enabled === true) return DEFAULT_DYNAMIC_HALF_LIFE_MS;
+        // object without enabled / halfLifeMs → enabled with default,
+        // matches legacy behaviour of `dynamic: {}`
+        return DEFAULT_DYNAMIC_HALF_LIFE_MS;
+    }
+    return 0;
+}
+
 /**
  * Browser adapter for the VitalCamera SDK.
  *
@@ -255,6 +288,15 @@ export default class BrowserAdapter {
         this._customDetector = config.faceDetector || null;
         this._manageCamera = config.manageCamera !== false;
         this._emotionCalibration = config.emotionCalibration || null;
+
+        /**
+         * Resolved dynamic-EMA half-life from `config.emotionCalibration.dynamic`.
+         * 0 means dynamic mode is off — VitalCamera uses this both to gate the
+         * IDB baseline cache (load + auto-save) and to decide whether to send
+         * `setDynamic` to the emotion worker post-init.
+         * @type {number}
+         */
+        this._emotionDynamicHalfLifeMs = _resolveDynamicHalfLifeMs(this._emotionCalibration?.dynamic);
 
         /** @type {VitalCamera|null} */
         this._vs = null;
@@ -377,6 +419,13 @@ export default class BrowserAdapter {
             ...this._vsConfig,
             models: this._models,
             workerBasePath: this._workerBasePath,
+            // Tell VitalCamera up-front whether dynamic mode is on so its
+            // init() can decide whether to load the persisted baseline from
+            // IndexedDB and register the periodic save callback. Without
+            // this hint the IDB cache would always load — even when the
+            // caller didn't ask for dynamic — silently mutating their
+            // emotion output across sessions.
+            emotionDynamicHalfLifeMs: this._emotionDynamicHalfLifeMs,
         });
         await this._vs.init();
 
@@ -431,10 +480,12 @@ export default class BrowserAdapter {
             else if (Array.isArray(cal.baseline) && cal.baseline.length === 8) {
                 this._vs._setEmotionBaseline(cal.baseline);
             }
-            // 2b.iii — dynamic (EMA) baseline mode
-            if (cal.dynamic && typeof cal.dynamic.halfLifeMs === 'number'
-                && cal.dynamic.halfLifeMs > 0) {
-                this._vs._setEmotionDynamic(cal.dynamic.halfLifeMs);
+            // 2b.iii — dynamic (EMA) baseline mode. The resolved half-life
+            // already encodes all the legal forms of `cal.dynamic`
+            // (true / false / { halfLifeMs } / { enabled }). 0 means off,
+            // any positive number means on.
+            if (this._emotionDynamicHalfLifeMs > 0) {
+                this._vs._setEmotionDynamic(this._emotionDynamicHalfLifeMs);
             }
         }
 

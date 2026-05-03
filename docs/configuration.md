@@ -177,16 +177,30 @@ population. If both `images` and `baseline` are supplied, `images` wins.
 
 ### 4. Dynamic baseline (runtime EMA drift)
 
+`emotionCalibration.dynamic` is the explicit switch for the EMA mode.
+Three forms are accepted, in increasing specificity:
+
 ```javascript
-emotionCalibration: {
-    dynamic: { halfLifeMs: 5000 },
-}
+// Boolean shorthand — enable with the SDK's default 5 s half-life:
+emotionCalibration: { dynamic: true }
+
+// Object form — custom half-life:
+emotionCalibration: { dynamic: { halfLifeMs: 3000 } }
+
+// Object form with explicit enabled flag:
+emotionCalibration: { dynamic: { enabled: true, halfLifeMs: 5000 } }
+
+// Off (any of the following):
+emotionCalibration: { dynamic: false }
+emotionCalibration: { dynamic: { enabled: false } }
+emotionCalibration: { dynamic: { halfLifeMs: 0 } }
+emotionCalibration: { /* dynamic key omitted */ }
 ```
 
 After every successful inference the worker EMA-folds the just-observed raw
-logits into the active baseline. The mixing coefficient is derived from a
-half-life so you can think in seconds:
-`alpha = 1 - 0.5^(dt / halfLifeMs)` per call. The semantic effect:
+logits into the active baseline. The mixing coefficient is derived from the
+half-life so you can think in seconds: `alpha = 1 - 0.5^(dt / halfLifeMs)`
+per call. The semantic effect:
 
 - Sustained smile / frown → baseline drifts that direction → KL-blend
   re-centres the result on Neutral. Held expressions fade to neutral over
@@ -195,6 +209,20 @@ half-life so you can think in seconds:
 
 `dynamic` stacks on top of `images` / `baseline` — the EMA starts from
 whatever baseline you initialised with.
+
+#### Cross-session persistence (automatic)
+
+When `dynamic` is enabled, the SDK persists the mutating baseline to
+IndexedDB on the same cadence as the rPPG warm-start state (every ~2 s).
+On the next page load `init()` restores the most recent value and feeds it
+to the emotion worker as the starting baseline — a returning user skips the
+first 5–10 s of warm-up wobble where the default baseline was still
+pulling the calibrated distribution toward Neutral.
+
+When `dynamic` is **off** the SDK never reads or writes the IndexedDB
+cache, so static-baseline sessions never see a stale dynamic baseline pop
+in. Caller-supplied `images` / `baseline` still override the cached value
+post-init, regardless of dynamic state.
 
 ### Stacking all three
 

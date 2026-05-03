@@ -271,6 +271,15 @@ class VitalCamera {
         // supplies emotionCalibration.images / .baseline.
         this._cachedEmotionBaseline = null;
 
+        // Whether dynamic-EMA mode is currently active. Drives the IDB cache
+        // (load on init, auto-save every _baselineExportInterval frames):
+        // when off we never touch IDB, so a static-baseline session never
+        // sees a stale dynamic baseline pop in. Initialised from
+        // `config.emotionDynamicHalfLifeMs` (which BrowserAdapter resolves
+        // from `emotionCalibration.dynamic`); flipped at runtime by
+        // `_setEmotionDynamic`.
+        this._dynamicActive = (this.config.emotionDynamicHalfLifeMs ?? 0) > 0;
+
         // Last accepted gaze result (used when current frame is filtered out)
         this._lastGaze = null;
 
@@ -318,9 +327,12 @@ class VitalCamera {
         }
 
         // Load cached emotion-calibration baseline (sibling of the rPPG
-        // state cache). Falls back to null on miss; the emotion worker
-        // then uses its built-in DEFAULT_ASIAN_BASELINE.
-        this._cachedEmotionBaseline = await _loadCachedBaseline();
+        // state cache) — but only when dynamic mode is enabled. With dynamic
+        // off, the baseline never mutates, so persisting / restoring it just
+        // pollutes the static path with stale data from previous sessions.
+        if (this._dynamicActive) {
+            this._cachedEmotionBaseline = await _loadCachedBaseline();
+        }
 
         const basePath = this.config.workerBasePath;  // null = auto Blob URL
         const workerNames = ['inference', 'psd'];
@@ -666,13 +678,16 @@ class VitalCamera {
             timestamp: Date.now(),
         });
 
-        // Periodic baseline snapshot for the IDB cache. Same role as the
-        // 60-frame `export_state` trigger in _onInferenceResult, but
-        // counted in emotion frames (since the baseline only mutates on
-        // each emotion inference, not each rPPG frame).
-        this._emotionFrameCount++;
-        if (this._emotionFrameCount % this._baselineExportInterval === 0) {
-            this._postIfReady('emotion', { type: 'getBaseline', payload: {} });
+        // Periodic baseline snapshot for the IDB cache. Skipped entirely
+        // when dynamic mode is off — same role as the 60-frame
+        // `export_state` trigger in _onInferenceResult, but counted in
+        // emotion frames (since the baseline only mutates on each emotion
+        // inference, not each rPPG frame).
+        if (this._dynamicActive) {
+            this._emotionFrameCount++;
+            if (this._emotionFrameCount % this._baselineExportInterval === 0) {
+                this._postIfReady('emotion', { type: 'getBaseline', payload: {} });
+            }
         }
     }
 
@@ -873,10 +888,16 @@ class VitalCamera {
 
     /**
      * @internal — used by BrowserAdapter to enable / disable dynamic EMA
-     * baseline updates inside the emotion worker.
+     * baseline updates inside the emotion worker. Also flips
+     * `_dynamicActive`, which gates the IDB baseline cache: if you toggle
+     * dynamic mode on at runtime the SDK will start auto-saving from that
+     * point on; toggling it off stops further saves. (Existing IDB entries
+     * are not deleted — next time the user re-enables dynamic, the most
+     * recently saved baseline is loaded as the starting point on init.)
      * @param {number|null} halfLifeMs  >0 ms → enable; null/0 → disable.
      */
     _setEmotionDynamic(halfLifeMs) {
+        this._dynamicActive = typeof halfLifeMs === 'number' && halfLifeMs > 0;
         this._postIfReady('emotion', { type: 'setDynamic', payload: { halfLifeMs } });
     }
 
