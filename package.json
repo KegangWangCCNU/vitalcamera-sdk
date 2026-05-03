@@ -1,6 +1,6 @@
 {
   "name": "vitalcamera-sdk",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Browser-based real-time physiological sensing SDK: heart rate, HRV, emotion, gaze, eye state, mouth/speaking, head pose",
   "type": "module",
   "main": "src/index.js",

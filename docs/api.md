@@ -279,9 +279,14 @@ vc.on('headpose', ({ yaw, pitch, roll, normal, timestamp }) => {
 Emitted by BrowserAdapter every frame, regardless of whether a face was found.
 
 ```javascript
-adapter.vitalcamera.on('face', ({ detected, box, keypoints, videoWidth, videoHeight, timestamp }) => {
+adapter.vitalcamera.on('face', ({ detected, box, boxRaw, keypoints, videoWidth, videoHeight, timestamp }) => {
   // detected    — boolean, whether a face was found this frame
-  // box         — { x, y, w, h } | null (in pixel coords on the source video)
+  // box         — { x, y, w, h } | null. Ready-to-draw tight bbox.
+  //               Face Landmarker on  → 478-landmark min/max with 3% lateral shrink
+  //               Face Landmarker off → same as boxRaw (BlazeFace bbox)
+  // boxRaw      — { x, y, w, h } | null. Always the BlazeFace short-range
+  //               bbox (Kalman-smoothed). Loose around hair/forehead — use
+  //               this if you specifically want the raw detector output.
   // keypoints   — [{ x, y }, ...] | null (6 BlazeFace keypoints, pixel coords:
   //               right_eye, left_eye, nose_tip, mouth, right_ear, left_ear)
   // videoWidth  — number, source video width

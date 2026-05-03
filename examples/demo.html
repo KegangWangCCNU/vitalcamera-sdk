@@ -737,35 +737,11 @@ async function init() {
         }
         previewCtx.drawImage(videoEl, 0, 0, previewCanvas.width, previewCanvas.height);
         overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        // Face / eye boxes — prefer Face Landmarker landmarks when available
-        // (anatomically tight, no padding). BlazeFace bbox is a fallback for
-        // the first 1–2 s while Face Landmarker is still booting.
-        const lms = adapter._lastFaceLandmarks;
-        const W = overlayCanvas.width, H = overlayCanvas.height;
-
-        // ── Face bbox: min/max of all 478 landmarks, then shrink width 10% ──
-        // The full-set min/max naturally extends to the temples (points 234,
-        // 454, …), which sits a bit beyond the visible cheek line in 2D
-        // projection. We just trim 10 % off each lateral side so the bbox
-        // snugs into the visible face surface. Y axis is left as-is.
-        if (lms && lms.length >= 3) {
-            let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
-            for (let i = 0; i < lms.length; i += 3) {
-                const px = lms[i] * W, py = lms[i + 1] * H;
-                if (px < xMin) xMin = px;
-                if (px > xMax) xMax = px;
-                if (py < yMin) yMin = py;
-                if (py > yMax) yMax = py;
-            }
-            const shrink = (xMax - xMin) * 0.03;
-            xMin += shrink;
-            xMax -= shrink;
-            overlayCtx.strokeStyle = 'rgba(201,100,66,0.75)';
-            overlayCtx.lineWidth = 2;
-            overlayCtx.strokeRect(xMin, yMin, xMax - xMin, yMax - yMin);
-        } else if (detected && box) {
-            // Fallback: BlazeFace bbox (loose, includes hair).
-            overlayCtx.strokeStyle = 'rgba(201,100,66,0.45)';
+        // Face bbox — the SDK already hands us the "tight" box (FL-derived
+        // when FL is on, BlazeFace raw when off). `boxRaw` is also available
+        // on the event if you want the BlazeFace bbox specifically.
+        if (detected && box) {
+            overlayCtx.strokeStyle = 'rgba(201,100,66,0.85)';
             overlayCtx.lineWidth = 2;
             overlayCtx.strokeRect(box.x, box.y, box.w, box.h);
         }

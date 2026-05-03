@@ -2,6 +2,30 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.2 — 2026-05-02
+
+### Changed
+
+- **`face` event payload now carries a ready-to-draw tight bbox.** Previously
+  the `box` field was the raw BlazeFace short-range bbox — anatomically loose
+  (includes forehead / hair / cheek slack), so consumers had to compute
+  their own tighter geometry from Face Landmarker landmarks if they wanted
+  a snug overlay. Now the SDK does it:
+    - `box`     — preferred display bbox. When Face Landmarker is active and
+                  has produced landmarks, it's the 478-point min/max with a
+                  3 % lateral shrink (the temple / tragus points sit a bit
+                  beyond the visible face surface in 2D projection, the
+                  shrink snugs the box to the cheek line). When FL is off,
+                  it's the BlazeFace bbox unchanged.
+    - `boxRaw`  — **new** field, always the BlazeFace bbox (Kalman-smoothed).
+                  Use this when you specifically want the raw detector output.
+
+  No code change required for typical consumers — `box` becomes tighter
+  automatically when FL is enabled. The `examples/demo.html` overlay code
+  was simplified to just `strokeRect(box.x, box.y, box.w, box.h)`; the
+  per-frame landmark-min/max math previously living in the demo is now
+  centralised in the SDK.
+
 ## 0.6.1 — 2026-05-02
 
 ### Added

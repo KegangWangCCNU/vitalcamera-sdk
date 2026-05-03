@@ -28,7 +28,7 @@ Create a file called `index.html`:
   <button id="startBtn">Start</button>
 
   <script type="module">
-    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.1/src/index.js';
+    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.2/src/index.js';
 
     const adapter = new BrowserAdapter({
       videoElement: document.getElementById('cam'),

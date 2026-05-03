@@ -932,6 +932,7 @@ export default class BrowserAdapter {
             this._vs?.emit('face', {
                 detected: false,
                 box: null,
+                boxRaw: null,
                 keypoints: null,
                 videoWidth: w,
                 videoHeight: h,
@@ -963,9 +964,38 @@ export default class BrowserAdapter {
         }
 
         // ── Emit face event so user can render their own overlay ──
+        // ── Compute the user-facing face bbox ──
+        // `boxRaw` is always the BlazeFace short-range detection (Kalman-
+        // smoothed). It tends to include forehead / hairline / cheek slack.
+        // `box` is the "ready-to-draw" tight bbox the SDK recommends:
+        //   - When Face Landmarker is active and has produced landmarks:
+        //     min/max of the 478 anatomical points with a 3% lateral shrink
+        //     (the temple / tragus points sit a bit beyond the visible face
+        //     surface in 2D, so a small horizontal trim snugs the box to
+        //     the cheek line).
+        //   - Otherwise: same as `boxRaw`. The lite / FL-off path therefore
+        //     gets the BlazeFace bbox unchanged — matches early SDK behaviour.
+        const boxRaw = { ...box };
+        let tightBox = boxRaw;
+        const lms = this._lastFaceLandmarks;
+        if (lms && lms.length >= 3) {
+            let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+            for (let i = 0; i < lms.length; i += 3) {
+                const px = lms[i] * w, py = lms[i + 1] * h;
+                if (px < xMin) xMin = px;
+                if (px > xMax) xMax = px;
+                if (py < yMin) yMin = py;
+                if (py > yMax) yMax = py;
+            }
+            const shrink = (xMax - xMin) * 0.03;
+            xMin += shrink; xMax -= shrink;
+            tightBox = { x: xMin, y: yMin, w: xMax - xMin, h: yMax - yMin };
+        }
+
         this._vs?.emit('face', {
             detected: true,
-            box: { ...box },
+            box: tightBox,
+            boxRaw,
             keypoints: keypoints ? keypoints.map(kp => ({ ...kp })) : [],
             videoWidth: w,
             videoHeight: h,
