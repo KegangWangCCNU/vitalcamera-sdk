@@ -80,6 +80,7 @@ const DEFAULTS = {
 const IDB_NAME = 'VitalCameraSDK';
 const IDB_STORE = 'states';
 const IDB_KEY = 'inferenceState';
+const IDB_KEY_EMOTION_BASELINE = 'emotionBaseline';
 
 /** @returns {Promise<IDBDatabase>} */
 function _openIDB() {
@@ -119,6 +120,49 @@ async function _saveCachedState(stateData) {
         const db = await _openIDB();
         const tx = db.transaction(IDB_STORE, 'readwrite');
         tx.objectStore(IDB_STORE).put(stateData, IDB_KEY);
+    } catch (_) {
+        /* IndexedDB unavailable — silently skip */
+    }
+}
+
+/**
+ * Load the persisted dynamic-emotion-calibration baseline from IndexedDB.
+ *
+ * Mirror of `_loadCachedState`. The dynamic EMA mode mutates the worker's
+ * `baselineLogits` on every inference, so without persistence each new
+ * session starts from the built-in default baseline and visibly drifts
+ * during the first 5–10 s of use. Caching the most recent value lets a
+ * returning user pick up where they left off.
+ *
+ * @returns {Promise<number[]|null>}  8-logit array, or null on miss / error
+ */
+async function _loadCachedBaseline() {
+    try {
+        const db = await _openIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readonly');
+            const req = tx.objectStore(IDB_STORE).get(IDB_KEY_EMOTION_BASELINE);
+            req.onsuccess = () => {
+                const v = req.result;
+                if (Array.isArray(v) && v.length === 8 && v.every(x => typeof x === 'number' && Number.isFinite(x))) {
+                    resolve(v);
+                } else {
+                    resolve(null);
+                }
+            };
+            req.onerror = () => resolve(null);
+        });
+    } catch (_) {
+        return null;
+    }
+}
+
+async function _saveCachedBaseline(baseline) {
+    if (!Array.isArray(baseline) || baseline.length !== 8) return;
+    try {
+        const db = await _openIDB();
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(baseline, IDB_KEY_EMOTION_BASELINE);
     } catch (_) {
         /* IndexedDB unavailable — silently skip */
     }
@@ -214,7 +258,18 @@ class VitalCamera {
 
         // Frame counter for periodic state export
         this._frameCount = 0;
-        this._stateExportInterval = 60; // export every 60 frames
+        this._stateExportInterval = 60; // export every 60 rPPG frames (~2 s @ 30 fps)
+
+        // Frame counter for periodic emotion-baseline export. Same cadence
+        // (~2 s) but counted in emotion-result frames, since emotion is
+        // the cadence at which the baseline actually mutates.
+        this._emotionFrameCount = 0;
+        this._baselineExportInterval = 4; // 4 emotion frames @ 2 Hz = 2 s
+
+        // Cached baseline loaded from IDB at init time. Used as the starting
+        // point fed to the emotion worker; later overridden if the consumer
+        // supplies emotionCalibration.images / .baseline.
+        this._cachedEmotionBaseline = null;
 
         // Last accepted gaze result (used when current frame is filtered out)
         this._lastGaze = null;
@@ -261,6 +316,11 @@ class VitalCamera {
                 this._stateJson = {};
             }
         }
+
+        // Load cached emotion-calibration baseline (sibling of the rPPG
+        // state cache). Falls back to null on miss; the emotion worker
+        // then uses its built-in DEFAULT_ASIAN_BASELINE.
+        this._cachedEmotionBaseline = await _loadCachedBaseline();
 
         const basePath = this.config.workerBasePath;  // null = auto Blob URL
         const workerNames = ['inference', 'psd'];
@@ -435,6 +495,16 @@ class VitalCamera {
             return;
         }
 
+        if (type === 'baselineResult' && data.payload) {
+            // Mirror of state_exported: snapshot the dynamic emotion
+            // baseline to IDB so a returning user skips warm-up wobble.
+            // Triggered every _baselineExportInterval emotion frames from
+            // _onEmotionResult; payload.requestId is unused here (the
+            // SDK doesn't await this — IDB write is fire-and-forget).
+            _saveCachedBaseline(data.payload.baseline);
+            return;
+        }
+
         if (type === 'hrv_result') {
             this._onHrvResult(data.payload || data);
             return;
@@ -595,6 +665,15 @@ class VitalCamera {
             time,
             timestamp: Date.now(),
         });
+
+        // Periodic baseline snapshot for the IDB cache. Same role as the
+        // 60-frame `export_state` trigger in _onInferenceResult, but
+        // counted in emotion frames (since the baseline only mutates on
+        // each emotion inference, not each rPPG frame).
+        this._emotionFrameCount++;
+        if (this._emotionFrameCount % this._baselineExportInterval === 0) {
+            this._postIfReady('emotion', { type: 'getBaseline', payload: {} });
+        }
     }
 
     /**
@@ -762,7 +841,13 @@ class VitalCamera {
                     type: 'init',
                     payload: {
                         modelBuffer: this.models.emotion,
-                        baselineLogits: this.config.emotionBaseline,   // undefined → keep default
+                        // Precedence (highest first):
+                        //   1. config.emotionBaseline       — explicit caller-supplied vector
+                        //   2. _cachedEmotionBaseline       — IDB-restored from previous session
+                        //   3. (undefined → worker default) — DEFAULT_ASIAN_BASELINE
+                        // BrowserAdapter still overrides via setBaseline post-init when
+                        // emotionCalibration.images / .baseline is supplied.
+                        baselineLogits: this.config.emotionBaseline ?? this._cachedEmotionBaseline ?? undefined,
                     },
                 });
                 break;

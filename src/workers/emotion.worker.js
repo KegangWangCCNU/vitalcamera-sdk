@@ -21,6 +21,8 @@
  *   <- probeResult { logits, requestId }
  *   -> setBaseline { baselineLogits | null }  install / clear the baseline
  *   <- baselineSet { hasBaseline }
+ *   -> getBaseline { requestId }              snapshot of current baseline
+ *   <- baselineResult { baseline, requestId } baseline is number[8] | null
  *   <- error      { msg }
  */
 
@@ -175,6 +177,18 @@ self.onmessage = async (e) => {
             const hl = payload?.halfLifeMs;
             dynamicHalfLifeMs = (typeof hl === 'number' && hl > 0) ? hl : null;
             dynamicLastT = null;   // restart timer
+        }
+        else if (type === 'getBaseline') {
+            // Used by the SDK's IndexedDB cache to snapshot the (mutating)
+            // dynamic-EMA baseline on a fixed cadence — same role as
+            // export_state for the rPPG warm-start state. The reply carries
+            // back requestId so the core can correlate, but in practice the
+            // core just hands the payload to _saveCachedBaseline().
+            const baseline = baselineLogits ? Array.from(baselineLogits) : null;
+            self.postMessage({
+                type: 'baselineResult',
+                payload: { baseline, requestId: payload?.requestId },
+            });
         }
     } catch (err) {
         self.postMessage({ type: 'error', msg: err.toString() });

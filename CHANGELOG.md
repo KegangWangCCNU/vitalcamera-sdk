@@ -2,6 +2,35 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.5 — 2026-05-03
+
+### Changed
+
+- **Dynamic emotion baseline now persists across sessions automatically.**
+  Mirrors the rPPG state IndexedDB cache: on `init()` the SDK loads the
+  most recent baseline from IDB and uses it as the emotion worker's
+  starting point; every 4 emotion frames (~2 s at the default 2 Hz) the
+  SDK auto-snapshots the worker's mutating EMA baseline back to IDB.
+  A returning user no longer sees the first 5–10 s of warm-up wobble
+  where the default baseline was still pulling the calibrated
+  distribution toward Neutral.
+
+  Fully transparent — no public-API addition, the existing
+  `emotionCalibration: { dynamic: { halfLifeMs } }` config is enough.
+  Caller-supplied `emotionCalibration.images` / `.baseline` still
+  override the cached baseline post-init, same precedence as before.
+
+### Internal
+
+- New `_loadCachedBaseline` / `_saveCachedBaseline` IDB helpers,
+  parallel to the existing `_loadCachedState` / `_saveCachedState`,
+  keyed `'emotionBaseline'` in the same `VitalCameraSDK / states`
+  object store.
+- Emotion worker gains a `getBaseline` message that snapshots the
+  current `baselineLogits` Float64Array — analogous to the rPPG
+  worker's `export_state`. Reply auto-saves to IDB inside
+  `_handleWorkerMessage`; not a public API.
+
 ## 0.6.4 — 2026-05-03
 
 ### Added
