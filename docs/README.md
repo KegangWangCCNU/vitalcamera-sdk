@@ -26,6 +26,7 @@ Browser-based real-time physiological sensing — extract **heart rate**, **HRV*
 - **[Getting Started →](getting-started.md)** — From zero to heart rate in 5 minutes
 - **[API Reference →](api.md)** — Full class and event documentation
 - **[Configuration →](configuration.md)** — All options explained
+- **[Performance →](performance.md)** — Per-model cost table + sizing guide
 - **[Live Demo →](https://kegangwangccnu.github.io/vitalcamera-sdk/examples/demo.html)** — Try it now in your browser
 - **[npm package →](https://www.npmjs.com/package/vitalcamera-sdk)** — `npm install vitalcamera-sdk`
 - **[GitHub →](https://github.com/KegangWangCCNU/vitalcamera-sdk)** — Source code

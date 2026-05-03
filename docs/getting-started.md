@@ -28,7 +28,7 @@ Create a file called `index.html`:
   <button id="startBtn">Start</button>
 
   <script type="module">
-    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/src/index.js';
+    import { BrowserAdapter } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.4/src/index.js';
 
     const adapter = new BrowserAdapter({
       videoElement: document.getElementById('cam'),
@@ -223,6 +223,31 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+```
+
+### Tune for your device's CPU budget
+
+Each feature toggle has a different cost. The
+[Performance page](performance.md) gives the per-model latency table and
+per-feature `× face_detection / second` ratios so you can decide which
+features to enable on lower-end devices.
+
+A common compact configuration that keeps the highest-value features
+(HR + HRV + emotion + head pose, no Face Landmarker, no gaze) costs
+~4.6× the face-detection baseline per second:
+
+```javascript
+const models = await BrowserAdapter.loadModels('./models/', {
+  emotion: true,
+  gaze: false,
+  faceLandmarker: false,
+});
+
+const adapter = new BrowserAdapter({
+  videoElement: document.getElementById('cam'),
+  models,
+  enableFaceLandmarker: false,  // dependent flags (eyestate / mouth / gaze) get force-disabled
+});
 ```
 
 ---

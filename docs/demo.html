@@ -393,7 +393,7 @@
 
 
 // CDN-pinned imports — keep the version in lock-step with package.json.
-import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/src/index.js';
+import { BrowserAdapter, KalmanFilter1D, EMOTION_LABELS, EMOTION_EMOJIS } from 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.4/src/index.js';
 
 
 // ─── DOM refs ───
@@ -566,7 +566,7 @@ async function init() {
     adapter = new BrowserAdapter({
         videoElement: videoEl,
         canvases: { bvp: plotCanvas, trend: trendCanvas },
-        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.3/models/',
+        modelBasePath: 'https://cdn.jsdelivr.net/npm/vitalcamera-sdk@0.6.4/models/',
         vitalcameraConfig: { gazeConfidenceThreshold: 0.05 },
     });
 

@@ -946,9 +946,6 @@ export default class BrowserAdapter {
         const { box: rawBox, keypoints } = detection;
 
         // ── Kalman-filter the face bounding box ──
-        // processNoise bumped 5× from the default (KF_BOX_Q above) since
-        // Face Landmarker is far more stable than BlazeFace; trust new
-        // measurements more so the box keeps up with fast head motion.
         let box;
         if (!this._kfBoxX) {
             this._kfBoxX = new KalmanFilter1D(rawBox.x, KF_BOX_Q);
@@ -966,19 +963,19 @@ export default class BrowserAdapter {
         }
 
         // ── Emit face event so user can render their own overlay ──
-        // ── Compute the user-facing face bbox ──
-        // `boxRaw` is always the BlazeFace short-range detection (Kalman-
-        // smoothed). It tends to include forehead / hairline / cheek slack.
-        // `box` is the "ready-to-draw" tight bbox the SDK recommends:
+        // `box` is the "ready-to-draw" face bbox:
         //   - When Face Landmarker is active and has produced landmarks:
-        //     min/max of the 478 anatomical points with a 3% lateral shrink
-        //     (the temple / tragus points sit a bit beyond the visible face
-        //     surface in 2D, so a small horizontal trim snugs the box to
-        //     the cheek line).
-        //   - Otherwise: same as `boxRaw`. The lite / FL-off path therefore
-        //     gets the BlazeFace bbox unchanged — matches early SDK behaviour.
+        //     min/max of the 478 anatomical points with a 3 % lateral shrink.
+        //   - Otherwise: the Kalman-smoothed BlazeFace bbox unchanged
+        //     (same one the rPPG / emotion / gaze crops use). The SDK no
+        //     longer applies any manual height-stretch / shift — emotion
+        //     and gaze are trained on tight face crops, so feeding the
+        //     raw detector bbox preserves the model's expected geometry.
+        // `boxRaw` is always the Kalman-smoothed BlazeFace bbox, regardless
+        // of FL state. With FL on, `box` is tighter (anatomical landmarks);
+        // with FL off, `box === boxRaw`.
         const boxRaw = { ...box };
-        let tightBox = boxRaw;
+        let tightBox = box;
         const lms = this._lastFaceLandmarks;
         if (lms && lms.length >= 3) {
             let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
@@ -1005,8 +1002,11 @@ export default class BrowserAdapter {
         });
 
         // ── Prepare model inputs ──
-        const rppgBox = padBox(box, w, h);
-        const rppgData = cropAndResize(ctx, rppgBox, RPPG_SIZE, RPPG_SIZE, 'simple');
+        // rPPG / emotion / gaze (FL-off fallback) all use the Kalman-smoothed
+        // BlazeFace bbox directly. Emotion (HSEmotion ENet-B0) and gaze
+        // (L2CS-Net MobileOne-S0) are trained on tight face crops, so the
+        // raw detector bbox preserves the geometry the models expect.
+        const rppgData = cropAndResize(ctx, box, RPPG_SIZE, RPPG_SIZE, 'simple');
 
         const frameInput = {
             rppgInput: rppgData,
@@ -1023,8 +1023,7 @@ export default class BrowserAdapter {
         const now = performance.now();
         if (this._models.emotion && (now - this._lastEmotionTime > this._emotionInterval)) {
             this._lastEmotionTime = now;
-            const emotionBox = padBox(box, w, h, 0.15);
-            frameInput.emotionInput = cropAndResize(ctx, emotionBox, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
+            frameInput.emotionInput = cropAndResize(ctx, box, EMOTION_SIZE, EMOTION_SIZE, 'imagenet');
         }
 
         // (OCEC eye-state pipeline removed in 0.6.1. Eye state is now sourced
@@ -1075,7 +1074,10 @@ export default class BrowserAdapter {
                         w, h, 0.2,
                     );
                 } else {
-                    gazeBox = padBox(box, w, h, 0.2);
+                    // FL not yet ready → use the Kalman-smoothed BlazeFace
+                    // bbox directly. No extra padding (the gaze net was
+                    // trained on tight face crops).
+                    gazeBox = box;
                 }
 
                 frameInput.gazeInput = cropAndResize(ctx, gazeBox, GAZE_SIZE, GAZE_SIZE, 'imagenet');

@@ -2,6 +2,36 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.4 — 2026-05-03
+
+### Added
+
+- **`docs/performance.md`** — per-model latency table benchmarked on LiteRT
+  CPU XNNPACK (single-thread, matching browser-WASM), and per-feature
+  `× face_detection / second` cost ratios so users can size the SDK for
+  their target device. Linked from README, docs landing page, and
+  Getting Started.
+
+### Changed
+
+- **Face-bbox feeding model crops reverted to raw Kalman BlazeFace bbox.**
+  An experimental 1.2× height-stretch / shift-up transformation (aligning
+  with the FacePhys-Emotion reference) was tested locally but dropped —
+  emotion and gaze are trained on tight face crops, and the stretched
+  crop visibly hurt emotion accuracy on real users. The `face` event's
+  `box` field falls back to the Kalman-smoothed BlazeFace bbox when the
+  Face Landmarker is off, and to the FL-landmark min/max with 3 % lateral
+  shrink when FL is on. `boxRaw` is always the raw Kalman BlazeFace bbox.
+
+### Removed
+
+- **`docs/demo_lite.html` and `examples/demo_lite.html`.** The lightweight
+  (FL-off) configuration is still fully supported via the existing config
+  flags — see [Performance](docs/performance.md) for the cost table and
+  [Getting Started](docs/getting-started.md#tune-for-your-devices-cpu-budget)
+  for an example. A separate demo file added confusion without adding
+  capability.
+
 ## 0.6.3 — 2026-05-02
 
 ### Fixed

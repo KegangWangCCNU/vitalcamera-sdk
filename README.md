@@ -193,6 +193,23 @@ BrowserAdapter (optional)
 | `ready` | `{}` | once after init |
 | `error` | `{ source, message }` | on error |
 
+## Performance
+
+Each feature toggle has a different CPU cost. The full **per-model cost
+table and per-feature sizing tips** live in **[Performance →](docs/performance.md)**:
+
+| Feature | Cost (× face-detection / second) |
+|---|---:|
+| Face detection (always on) | 1.00× |
+| Heart rate (always on) | 2.15× |
+| Emotion | 1.38× |
+| Face Landmarker (eye state + mouth piggyback for free) | 2.85× |
+| Gaze (requires Face Landmarker) | 2.86× |
+| HRV / head pose | 0× (pure JS) |
+
+Tune via the dependency-grouped feature switches in
+[Configuration](docs/configuration.md#face-landmarker-and-feature-toggles).
+
 ## Models
 
 Models are **included** in the npm package and git repository under `models/`. The SDK loads them automatically. Included models:

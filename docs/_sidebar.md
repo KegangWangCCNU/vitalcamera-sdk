@@ -2,4 +2,5 @@
 - [Getting Started](getting-started.md)
 - [API Reference](api.md)
 - [Configuration](configuration.md)
+- [Performance](performance.md)
 - [Live Demo](https://kegangwangccnu.github.io/vitalcamera-sdk/docs/demo.html)

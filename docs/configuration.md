@@ -76,8 +76,9 @@ letting them through would just produce no events.
 
 **The lightweight fallback** (FL off): you keep `rPPG / HRV / emotion / head-pose`,
 the BlazeFace face detector still drives face-bbox cropping for those, and
-you save ~3.8 MB download + 270 ms / sec of CPU. Use this for low-end
-mobile or battery-sensitive contexts.
+you save the 3.8 MB Face Landmarker bundle plus a 5.7× face-detection-baseline
+worth of per-second CPU (gaze adds another 2.86× on top when on). See
+[Performance](performance.md) for the full per-feature cost breakdown.
 
 ### Parameter details
 
