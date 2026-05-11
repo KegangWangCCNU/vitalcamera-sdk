@@ -697,10 +697,13 @@ export default class BrowserAdapter {
 
     /**
      * Load MediaPipe FaceDetector (BlazeFace short-range) from CDN.
-     * Tries GPU delegate first and falls back to CPU on failure.
-     * The .tflite model is fetched from {@link _modelBasePath} +
-     * `blaze_face_short_range.tflite` unless overridden via
-     * `models.faceDetector` (ArrayBuffer / Uint8Array).
+     * Tries CPU delegate first and falls back to GPU only if CPU init fails.
+     * CPU is the default because it's more predictable across the long tail
+     * of browser/driver combos; GPU is faster on supporting hardware but the
+     * delegate is finicky (older Intel/AMD drivers, WebGL1-only browsers,
+     * headless contexts, etc.). The .tflite model is fetched from
+     * {@link _modelBasePath} + `blaze_face_short_range.tflite` unless
+     * overridden via `models.faceDetector` (ArrayBuffer / Uint8Array).
      * @private
      */
     async _loadBlazeFace() {
@@ -721,16 +724,16 @@ export default class BrowserAdapter {
 
         try {
             this._detector = await FaceDetector.createFromOptions(vision, {
-                baseOptions: { ...baseOptions, delegate: 'GPU' },
+                baseOptions: { ...baseOptions, delegate: 'CPU' },
                 runningMode: 'VIDEO',
             });
         } catch (err) {
             this._detector = await FaceDetector.createFromOptions(vision, {
-                baseOptions: { ...baseOptions, delegate: 'CPU' },
+                baseOptions: { ...baseOptions, delegate: 'GPU' },
                 runningMode: 'VIDEO',
             });
             // eslint-disable-next-line no-console
-            console.log('FaceDetector GPU delegate not available, using CPU.');
+            console.log('FaceDetector CPU delegate not available, falling back to GPU.');
         }
     }
 
@@ -840,7 +843,8 @@ export default class BrowserAdapter {
                 esmUrl:   mediapipeBase + '+esm',
                 wasmBase: mediapipeBase + 'wasm',
                 modelPath,
-                delegate: 'GPU',
+                // CPU default — see _loadBlazeFace() for the rationale.
+                delegate: 'CPU',
             },
         });
     }

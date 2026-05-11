@@ -54,25 +54,29 @@ self.onmessage = async (e) => {
 
             const fileset = await FilesetResolver.forVisionTasks(payload.wasmBase);
 
-            // Try GPU first, fall back to CPU. GPU is typically 2–3× faster
-            // on desktop / mid-tier mobile. Some browsers / GPUs reject the
-            // delegate (e.g. WebGL 1, headless), in which case CPU still works.
+            // Default to CPU; caller can request GPU via payload.delegate.
+            // GPU is typically 2–3× faster on supporting hardware but the
+            // delegate is unreliable across older drivers / WebGL1-only
+            // browsers / headless contexts — CPU is the safer default.
+            // If the requested delegate fails, fall back to the other one.
+            const requestedDelegate = payload.delegate || 'CPU';
+            const fallbackDelegate  = requestedDelegate === 'CPU' ? 'GPU' : 'CPU';
             try {
                 landmarker = await FaceLandmarker.createFromOptions(fileset, {
                     baseOptions: {
                         modelAssetPath: payload.modelPath,
-                        delegate: payload.delegate || 'GPU',
+                        delegate: requestedDelegate,
                     },
                     runningMode: 'VIDEO',
                     numFaces: 1,
                     outputFaceBlendshapes: true,
                     outputFacialTransformationMatrixes: false,
                 });
-            } catch (gpuErr) {
+            } catch (delegateErr) {
                 landmarker = await FaceLandmarker.createFromOptions(fileset, {
                     baseOptions: {
                         modelAssetPath: payload.modelPath,
-                        delegate: 'CPU',
+                        delegate: fallbackDelegate,
                     },
                     runningMode: 'VIDEO',
                     numFaces: 1,
