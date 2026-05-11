@@ -32,7 +32,13 @@ let lowPowerMode = false;
 
 /* ── Constants ── */
 const INPUT_SHAPE = [1, 450];
-const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/wasm/';
+
+/**
+ * Fallback LiteRT runtime base URL. The host (BrowserAdapter) normally injects
+ * `litertBase` via the init payload — this default only kicks in when the
+ * worker is driven directly by user code that hasn't been updated to pass it.
+ */
+const DEFAULT_LITERT_BASE = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/';
 
 
 /* ── HRV pipeline (inlined from hrv.js so the worker is self-contained) ── */
@@ -257,8 +263,9 @@ self.onmessage = async (e) => {
  * @param {ArrayBuffer} params.sqiBuffer - SQI model (.tflite)
  * @param {ArrayBuffer} params.psdBuffer - PSD model (.tflite)
  */
-async function handleInit({ sqiBuffer, psdBuffer }) {
-    const litertModule = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
+async function handleInit({ sqiBuffer, psdBuffer, litertBase = DEFAULT_LITERT_BASE }) {
+    const WASM_BASE_URL = litertBase + 'wasm/';
+    const litertModule = await import(litertBase + '+esm');
     LiteRT = litertModule;
     Tensor = litertModule.Tensor;
 

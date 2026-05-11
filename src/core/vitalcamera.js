@@ -43,8 +43,22 @@ const EventEmitterMixin = {
 // Default configuration
 // ---------------------------------------------------------------------------
 
+/**
+ * Default CDN base URLs for the LiteRT and MediaPipe tasks-vision runtimes.
+ * These are the URLs the SDK fetches at runtime — they are not declared as
+ * hard `dependencies` in package.json because the runtimes themselves run
+ * in Web Workers and are loaded via dynamic `import(url)`. Callers can
+ * override these via `BrowserAdapter`/`VitalCamera` constructor config to
+ * self-host the runtimes (CSP, offline, private networks, CDN allow-listing).
+ */
+export const DEFAULT_RUNTIME_BASE_URLS = Object.freeze({
+    litert:    'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/',
+    mediapipe: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/',
+});
+
 const DEFAULTS = {
     workerBasePath: null,     // null = auto (fetch from SDK URL + Blob URL)
+    runtimeBaseUrls: null,    // null = use DEFAULT_RUNTIME_BASE_URLS
 
     // ── Face Landmarker dependency group ─────────────────────────────────
     // The features in this group all require MediaPipe Face Landmarker
@@ -206,6 +220,13 @@ class VitalCamera {
         // Merge config with defaults
         this.config = { ...DEFAULTS, ...config };
         this.models = config.models || {};
+
+        // Resolve runtime base URLs (LiteRT + tasks-vision). Caller can pass
+        // a partial object — missing keys fall back to DEFAULT_RUNTIME_BASE_URLS.
+        this._runtimeBaseUrls = {
+            ...DEFAULT_RUNTIME_BASE_URLS,
+            ...(this.config.runtimeBaseUrls || {}),
+        };
 
         // ── Face Landmarker dependency validation ──────────────────────
         // eyestate / mouth / gaze all consume Face Landmarker output. If
@@ -831,6 +852,7 @@ class VitalCamera {
      * @private
      */
     _sendWorkerInit(name, worker) {
+        const litertBase = this._runtimeBaseUrls.litert;
         switch (name) {
             case 'inference':
                 worker.postMessage({
@@ -839,6 +861,7 @@ class VitalCamera {
                         modelBuffer: this.models.rppg,
                         projBuffer: this.models.rppgProj,
                         stateJson: this._stateJson || {},
+                        litertBase,
                     },
                 });
                 break;
@@ -848,6 +871,7 @@ class VitalCamera {
                     payload: {
                         sqiBuffer: this.models.sqi,
                         psdBuffer: this.models.psd,
+                        litertBase,
                     },
                 });
                 break;
@@ -863,13 +887,14 @@ class VitalCamera {
                         // BrowserAdapter still overrides via setBaseline post-init when
                         // emotionCalibration.images / .baseline is supplied.
                         baselineLogits: this.config.emotionBaseline ?? this._cachedEmotionBaseline ?? undefined,
+                        litertBase,
                     },
                 });
                 break;
             case 'gaze':
                 worker.postMessage({
                     type: 'init',
-                    payload: { modelBuffer: this.models.gaze },
+                    payload: { modelBuffer: this.models.gaze, litertBase },
                 });
                 break;
             // (eye_state init dropped in 0.6.1)

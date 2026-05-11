@@ -156,6 +156,24 @@ loop();
 
 Workers are loaded automatically via Blob URLs — no need to copy worker files or configure paths. This works seamlessly with CDN imports and local installs alike.
 
+### Self-hosting the runtimes
+
+At runtime the workers pull two ESM modules — `@litertjs/core` (TFLite WASM) and `@mediapipe/tasks-vision` (Face Landmarker / BlazeFace). By default both load from `cdn.jsdelivr.net`. For strict-CSP pages, offline / private-network deployments, or regions where jsdelivr is unreliable, point the SDK at your own copies via `runtimeBaseUrls`:
+
+```javascript
+const adapter = new BrowserAdapter({
+    videoElement: document.getElementById('cam'),
+    models,
+    runtimeBaseUrls: {
+        // Trailing slash required. SDK appends `+esm` and `wasm/`.
+        litert:    '/static/litertjs-core-0.2.1/',
+        mediapipe: '/static/mediapipe-tasks-vision-0.10.21/',
+    },
+});
+```
+
+Either key may be omitted to fall back to the SDK default for that runtime. The two packages are also declared as **optional `peerDependencies`** so audit tools and dependency scanners can see them; you only need to `npm install` them if you want to self-host (e.g. copy `node_modules/@litertjs/core/` and `node_modules/@mediapipe/tasks-vision/` into your static asset directory and pass those paths above).
+
 ## Architecture
 
 ```

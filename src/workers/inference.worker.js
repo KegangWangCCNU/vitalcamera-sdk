@@ -35,7 +35,13 @@ const IMG_IDX = 1;
 const DT_IDX = 0;
 const INPUT_COUNT = 48;
 const IMG_SHAPE = [1, 1, 36, 36, 3];
-const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/wasm/';
+
+/**
+ * Fallback LiteRT runtime base URL. The host (BrowserAdapter) normally injects
+ * `litertBase` via the init payload — this default only kicks in when the
+ * worker is driven directly by user code that hasn't been updated to pass it.
+ */
+const DEFAULT_LITERT_BASE = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/';
 
 /** Indices into the main model's input tensor array that the projection model reads. */
 const PROJ_INPUT_SOURCE_INDICES = [4, 5, 12, 15, 16, 23, 26, 27, 34, 37, 38, 40, 41, 46];
@@ -91,12 +97,13 @@ self.onmessage = async (e) => {
  * @param {Object}      params.stateJson    - Serialized state tensors (name -> array)
  * @param {ArrayBuffer} params.projBuffer   - Projection model (.tflite)
  */
-async function handleInit({ modelBuffer, stateJson = {}, projBuffer }) {
-    const litertModule = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
+async function handleInit({ modelBuffer, stateJson = {}, projBuffer, litertBase = DEFAULT_LITERT_BASE }) {
+    const WASM_BASE_URL = litertBase + 'wasm/';
+    const litertModule = await import(litertBase + '+esm');
     LiteRT = litertModule;
     Tensor = litertModule.Tensor;
 
-    // Redirect WASM fetch to CDN base URL
+    // Redirect WASM fetch to the configured LiteRT base URL
     const originalFetch = self.fetch;
     self.fetch = async (input, init) => {
         if (typeof input === 'string' && input.endsWith('.wasm')) {

@@ -33,6 +33,13 @@ let FilesetResolver = null;
 let FaceLandmarker = null;
 let landmarker = null;
 
+/**
+ * Fallback MediaPipe tasks-vision ESM URL. The host (BrowserAdapter) normally
+ * injects `esmUrl` via the init payload — this default only kicks in when the
+ * worker is driven directly by user code that hasn't been updated to pass it.
+ */
+const DEFAULT_MEDIAPIPE_ESM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm';
+
 self.onmessage = async (e) => {
     const { type, payload } = e.data || {};
     try {
@@ -40,9 +47,7 @@ self.onmessage = async (e) => {
             const t0 = performance.now();
 
             if (!FilesetResolver) {
-                const mod = await import(
-                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm'
-                );
+                const mod = await import(payload.esmUrl || DEFAULT_MEDIAPIPE_ESM);
                 FilesetResolver = mod.FilesetResolver;
                 FaceLandmarker  = mod.FaceLandmarker;
             }

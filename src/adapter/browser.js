@@ -22,7 +22,7 @@
  * @module adapter/browser
  */
 
-import VitalCamera from '../core/vitalcamera.js';
+import VitalCamera, { DEFAULT_RUNTIME_BASE_URLS } from '../core/vitalcamera.js';
 import { estimateHeadPose } from '../core/headpose.js';
 import { createWorker } from '../workers/loader.js';
 import KalmanFilter1D from '../utils/kalman.js';
@@ -290,6 +290,22 @@ export default class BrowserAdapter {
         this._emotionCalibration = config.emotionCalibration || null;
 
         /**
+         * Resolved runtime base URLs for LiteRT and MediaPipe tasks-vision.
+         * Caller can pass either at the adapter level (`config.runtimeBaseUrls`)
+         * or nested under vitalcameraConfig — the adapter level wins. A
+         * partial object is allowed; missing keys fall back to
+         * {@link DEFAULT_RUNTIME_BASE_URLS}.
+         *
+         * Both URLs MUST end in '/'. The adapter appends `+esm` for the ESM
+         * entry and `wasm/` (LiteRT) or `wasm` (tasks-vision) for the WASM base.
+         */
+        this._runtimeBaseUrls = {
+            ...DEFAULT_RUNTIME_BASE_URLS,
+            ...(this._vsConfig.runtimeBaseUrls || {}),
+            ...(config.runtimeBaseUrls || {}),
+        };
+
+        /**
          * Resolved dynamic-EMA half-life from `config.emotionCalibration.dynamic`.
          * 0 means dynamic mode is off — VitalCamera uses this both to gate the
          * IDB baseline cache (load + auto-save) and to decide whether to send
@@ -419,6 +435,7 @@ export default class BrowserAdapter {
             ...this._vsConfig,
             models: this._models,
             workerBasePath: this._workerBasePath,
+            runtimeBaseUrls: this._runtimeBaseUrls,
             // Tell VitalCamera up-front whether dynamic mode is on so its
             // init() can decide whether to load the persisted baseline from
             // IndexedDB and register the periodic save callback. Without
@@ -687,12 +704,9 @@ export default class BrowserAdapter {
      * @private
      */
     async _loadBlazeFace() {
-        const { FaceDetector, FilesetResolver } = await import(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm'
-        );
-        const vision = await FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
-        );
+        const mediapipeBase = this._runtimeBaseUrls.mediapipe;
+        const { FaceDetector, FilesetResolver } = await import(mediapipeBase + '+esm');
+        const vision = await FilesetResolver.forVisionTasks(mediapipeBase + 'wasm');
 
         // Allow callers to provide the model as a buffer; otherwise fetch by URL.
         const baseOptions = {};
@@ -819,10 +833,12 @@ export default class BrowserAdapter {
             this._vs?.emit('error', { source: 'faceLandmarker', message: e.message });
         });
 
+        const mediapipeBase = this._runtimeBaseUrls.mediapipe;
         worker.postMessage({
             type: 'init',
             payload: {
-                wasmBase: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
+                esmUrl:   mediapipeBase + '+esm',
+                wasmBase: mediapipeBase + 'wasm',
                 modelPath,
                 delegate: 'GPU',
             },

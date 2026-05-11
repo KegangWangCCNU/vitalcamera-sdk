@@ -25,7 +25,13 @@ let Tensor = null;
 let model = null;
 
 /* ── Constants ── */
-const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/wasm/';
+
+/**
+ * Fallback LiteRT runtime base URL. The host (BrowserAdapter) normally injects
+ * `litertBase` via the init payload — this default only kicks in when the
+ * worker is driven directly by user code that hasn't been updated to pass it.
+ */
+const DEFAULT_LITERT_BASE = 'https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/';
 
 /** Number of classification bins for angle estimation. */
 const NUM_BINS = 90;
@@ -107,8 +113,9 @@ self.onmessage = async (e) => {
  * @param {Object} params
  * @param {ArrayBuffer} params.modelBuffer - Gaze model (.tflite)
  */
-async function handleInit({ modelBuffer }) {
-    const litertModule = await import('https://cdn.jsdelivr.net/npm/@litertjs/core@0.2.1/+esm');
+async function handleInit({ modelBuffer, litertBase = DEFAULT_LITERT_BASE }) {
+    const WASM_BASE_URL = litertBase + 'wasm/';
+    const litertModule = await import(litertBase + '+esm');
     LiteRT = litertModule;
     Tensor = litertModule.Tensor;
 
