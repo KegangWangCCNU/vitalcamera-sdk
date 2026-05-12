@@ -36,7 +36,7 @@ self.onmessage = async (e) => {
             // `importScripts(...)` calls succeed because we're not a module worker.
             if (!FilesetResolver) {
                 const mod = await import(
-                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm'
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/+esm'
                 );
                 FilesetResolver = mod.FilesetResolver;
                 FaceLandmarker  = mod.FaceLandmarker;

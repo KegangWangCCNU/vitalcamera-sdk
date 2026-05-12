@@ -2,6 +2,21 @@
 
 All notable changes to `vitalcamera-sdk`.
 
+## 0.6.9 — 2026-05-12
+
+### Fixed
+
+- **`examples/` references to MediaPipe `@0.10.14` updated to `@0.10.21`** —
+  the SDK itself (`src/`) and the `peerDependencies` declaration have
+  pointed at `^0.10.21` since 0.6.7, but three demo / test harness files
+  still hardcoded `@0.10.14` in their CDN URLs:
+
+  - `examples/face_landmarker.worker.js` (default ESM URL)
+  - `examples/face_landmarker_test.html` (active + commented URL variants)
+  - `examples/face_landmarker_worker_test.html` (WASM base)
+
+  Pure example-only change — no `src/` or shipped package contents change.
+
 ## 0.6.6 — 2026-05-03
 
 ### Changed
